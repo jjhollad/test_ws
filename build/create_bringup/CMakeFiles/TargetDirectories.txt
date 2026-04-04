@@ -1,9 +1,0 @@
-/home/user/test_ws/build/create_bringup/CMakeFiles/uninstall.dir
-/home/user/test_ws/build/create_bringup/CMakeFiles/create_bringup_uninstall.dir
-/home/user/test_ws/build/create_bringup/CMakeFiles/test.dir
-/home/user/test_ws/build/create_bringup/CMakeFiles/edit_cache.dir
-/home/user/test_ws/build/create_bringup/CMakeFiles/rebuild_cache.dir
-/home/user/test_ws/build/create_bringup/CMakeFiles/list_install_components.dir
-/home/user/test_ws/build/create_bringup/CMakeFiles/install.dir
-/home/user/test_ws/build/create_bringup/CMakeFiles/install/local.dir
-/home/user/test_ws/build/create_bringup/CMakeFiles/install/strip.dir

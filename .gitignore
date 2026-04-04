@@ -1,0 +1,41 @@
+# Colcon / ROS 2 workspace (always regenerate with: colcon build)
+build/
+install/
+log/
+
+# If colcon was ever run from inside a package directory
+**/build/
+**/install/
+**/log/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+*.egg
+
+# C++ / CMake (local or in-tree artifacts)
+*.o
+*.a
+*.so
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Misc
+*.log
+.cache/

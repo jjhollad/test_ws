@@ -1,1 +1,0 @@
-/home/user/test_ws/build/generic_motor_driver/ament_cmake_environment_hooks/local_setup.sh
