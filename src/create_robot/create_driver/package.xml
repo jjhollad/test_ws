@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>generic_motor_driver</name>
+  <version>1.0.0</version>
+  <description>Generic ROS2 driver for serial-based motor controllers</description>
+
+  <maintainer email="your-email@example.com">Your Name</maintainer>
+
+  <license>BSD</license>
+
+  <url type="website">https://github.com/your-repo/generic_motor_driver</url>
+
+  <author email="your-email@example.com">Your Name</author>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>diagnostic_msgs</depend>
+  <depend>diagnostic_updater</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>rclcpp</depend>
+  <depend>robot_state_publisher</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>joint_state_publisher</depend>
+  <depend>rviz2</depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

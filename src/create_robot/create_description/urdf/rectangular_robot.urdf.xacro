@@ -1,0 +1,193 @@
+<?xml version="1.0"?>
+<robot name="rectangular_robot" xmlns:xacro="http://ros.org/wiki/xacro">
+
+  <!-- Include lidar xacro files -->
+  <xacro:include filename="$(find create_description)/urdf/lidar.urdf.xacro" />
+  <xacro:include filename="$(find create_description)/urdf/lidar_gazebo.urdf.xacro" />
+
+  <!-- Material Definitions (must be global for RViz) -->
+  <material name="blue">
+    <color rgba="0 0 1 1"/>
+  </material>
+  <material name="black">
+    <color rgba="0 0 0 1"/>
+  </material>
+  <material name="gray">
+    <color rgba="0.5 0.5 0.5 1"/>
+  </material>
+  <material name="orange">
+    <color rgba="1 0.5 0 1"/>
+  </material>
+  <material name="dark_gray">
+    <color rgba="0.3 0.3 0.3 1"/>
+  </material>
+
+  <!-- Properties (parameters) -->
+  <xacro:property name="PI" value="3.1415926535897931" />
+  
+  <!-- Base dimensions -->
+  <xacro:property name="base_length" value="0.8" />
+  <xacro:property name="base_width" value="0.6" />  <!-- Adjusted to not extend past wheels -->
+  <xacro:property name="base_height" value="0.1" />
+  <xacro:property name="base_mass" value="25.0" />
+  
+  <!-- Wheel properties -->
+  <xacro:property name="wheel_radius" value="0.12" />
+  <xacro:property name="wheel_width" value="0.05" />
+  <xacro:property name="wheel_mass" value="2.0" />
+  <xacro:property name="wheel_separation" value="0.57" />  <!-- Distance between rear wheels -->
+  <!-- Note: Rear wheels are forward by one wheel radius (origin is between rear wheels) -->
+  
+  <!-- Caster wheel properties -->
+  <xacro:property name="caster_radius" value="0.075" />
+  <xacro:property name="caster_mass" value="0.5" />
+  <!-- Caster at front of robot (base extends from x=0 to x=base_length, center at base_length/2) -->
+  <xacro:property name="caster_x_offset" value="${base_length}" />  <!-- Front edge of base -->
+  
+  <!-- Sweeping wheel properties -->
+  <xacro:property name="sweep_wheel_radius" value="0.15" />
+  <xacro:property name="sweep_wheel_length" value="0.03" />
+  <xacro:property name="sweep_wheel_mass" value="1.5" />
+  <!-- Sweep wheel at front of robot -->
+  <xacro:property name="sweep_wheel_x" value="${base_length}" />  <!-- Front edge of base -->
+  <xacro:property name="sweep_wheel_y" value="-0.275" />  <!-- Negative y = right side -->
+  
+  <!-- Macro for a wheel: axis must differ on left vs right so +joint velocity = forward for both (RViz). -->
+  <xacro:macro name="wheel" params="name x y z axis_xyz">
+    <link name="${name}">
+      <visual>
+        <origin xyz="0 0 0" rpy="${PI/2} 0 0"/>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+        </geometry>
+        <material name="black"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="${PI/2} 0 0"/>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <mass value="${wheel_mass}"/>
+        <inertia ixx="0.1" ixy="0" ixz="0" iyy="0.1" iyz="0" izz="0.1"/>
+      </inertial>
+    </link>
+    
+    <joint name="${name}_joint" type="continuous">
+      <parent link="base_link"/>
+      <child link="${name}"/>
+      <origin xyz="${x} ${y} ${z}" rpy="0 0 0"/>
+      <axis xyz="${axis_xyz}"/>
+    </joint>
+  </xacro:macro>
+
+  <!-- Base Link -->
+  <!-- Base origin is at ground level, centered between rear wheels -->
+  <link name="base_link">
+    <visual>
+      <!-- Base extends from z=0 (ground) to z=base_height, centered at base_length/2 forward -->
+      <origin xyz="${base_length/2} 0 ${base_height/2}" rpy="0 0 0"/>
+      <geometry>
+        <box size="${base_length} ${base_width} ${base_height}"/>
+      </geometry>
+      <material name="blue"/>
+    </visual>
+    <collision>
+      <origin xyz="${base_length/2} 0 ${base_height/2}" rpy="0 0 0"/>
+      <geometry>
+        <box size="${base_length} ${base_width} ${base_height}"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="${base_length/2} 0 ${base_height/2}" rpy="0 0 0"/>
+      <mass value="${base_mass}"/>
+      <inertia ixx="1.0" ixy="0" ixz="0" iyy="1.0" iyz="0" izz="1.0"/>
+    </inertial>
+  </link>
+
+  <!-- Rear wheels: classic diff-drive (+Y left, -Y right). Required for correct turn animation in RViz; both +Y makes straight OK but reverses both wheels when turning. -->
+  <xacro:wheel name="left_rear_wheel" x="${wheel_radius}" y="${wheel_separation/2}" z="0" axis_xyz="0 1 0"/>
+  <xacro:wheel name="right_rear_wheel" x="${wheel_radius}" y="${-wheel_separation/2}" z="0" axis_xyz="0 -1 0"/>
+
+  <!-- Front Caster Wheel -->
+  <link name="front_caster_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <sphere radius="${caster_radius}"/>
+      </geometry>
+      <material name="gray"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <sphere radius="${caster_radius}"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="${caster_mass}"/>
+      <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/>
+    </inertial>
+  </link>
+
+  <joint name="front_caster_wheel_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="front_caster_wheel"/>
+    <!-- Caster at front of robot, at ground level -->
+    <origin xyz="${caster_x_offset} 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Sweeping Wheel (parallel to floor - horizontal cylinder) -->
+  <link name="sweeping_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="${sweep_wheel_radius}" length="${sweep_wheel_length}"/>
+      </geometry>
+      <material name="orange"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="${sweep_wheel_radius}" length="${sweep_wheel_length}"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="${sweep_wheel_mass}"/>
+      <inertia ixx="0.15" ixy="0" ixz="0" iyy="0.15" iyz="0" izz="0.15"/>
+    </inertial>
+  </link>
+
+  <joint name="sweeping_wheel_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="sweeping_wheel"/>
+    <!-- Sweep wheel at front of robot, at ground level -->
+    <origin xyz="${sweep_wheel_x} ${sweep_wheel_y} 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Base Footprint (for navigation) - positioned at origin between rear wheels -->
+  <link name="base_footprint"/>
+
+  <joint name="base_footprint_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <!-- base_footprint is at ground level (z=0) at the midpoint between rear wheels -->
+    <!-- base_link origin is also at ground level, so no z offset needed -->
+    <origin xyz="${wheel_radius} 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Lidar positioned above rear wheels on top of body -->
+  <!-- Position: x=wheel_radius (where rear wheels are), y=0 (center), z=base_height (top of base) + half lidar height (0.02m) -->
+  <!-- Note: base_link origin is at (0, 0, 0), rear wheels are at x=wheel_radius (0.12m), base extends from z=0 to z=base_height (0.1m) -->
+  <!-- Lidar center sits at top of base + half lidar height (0.02m) = 0.12m -->
+  <xacro:lidar parent_link="base_link" x="${wheel_radius}" y="0" z="${base_height + 0.02}"/>
+  
+  <!-- Gazebo plugin for lidar simulation -->
+  <xacro:sim_lidar/>
+
+</robot>
+
