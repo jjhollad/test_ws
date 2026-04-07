@@ -80,6 +80,15 @@ GenericMotorDriver::GenericMotorDriver()
   invert_right_encoder_ = declare_parameter<bool>("invert_right_encoder", true);
   invert_left_motor_ = declare_parameter<bool>("invert_left_motor", false);
   invert_right_motor_ = declare_parameter<bool>("invert_right_motor", true);
+  cmd_vel_filter_alpha_ = declare_parameter<double>("cmd_vel_filter_alpha", 1.0);
+  if (cmd_vel_filter_alpha_ < 0.0) {
+    cmd_vel_filter_alpha_ = 0.0;
+  } else if (cmd_vel_filter_alpha_ > 1.0) {
+    cmd_vel_filter_alpha_ = 1.0;
+  }
+  filtered_cmd_lin_x_ = 0.0;
+  filtered_cmd_ang_z_ = 0.0;
+  cmd_vel_filter_initialized_ = false;
   // RViz-only: multiply published /joint_states position & velocity for each wheel (+1 or -1).
   // Does not affect odometry; use to match URDF wheel axis vs encoder chirality.
   joint_state_left_sign_ = declare_parameter<double>("joint_state_left_sign", -1.0);
@@ -115,6 +124,10 @@ GenericMotorDriver::GenericMotorDriver()
                      << ", right=" << (invert_right_encoder_ ? "true" : "false"));
   RCLCPP_INFO_STREAM(get_logger(), "[MOTOR] Motor inversion: left=" << (invert_left_motor_ ? "true" : "false") 
                      << ", right=" << (invert_right_motor_ ? "true" : "false"));
+  if (cmd_vel_filter_alpha_ < 1.0) {
+    RCLCPP_INFO_STREAM(get_logger(), "[MOTOR] cmd_vel low-pass alpha=" << cmd_vel_filter_alpha_
+                       << " (1.0=disabled)");
+  }
   RCLCPP_INFO_STREAM(get_logger(), "[MOTOR] JointState RViz sign: left=" << joint_state_left_sign_
                      << ", right=" << joint_state_right_sign_);
 
@@ -526,6 +539,20 @@ void GenericMotorDriver::cmdVelCallback(geometry_msgs::msg::Twist::UniquePtr msg
   // Assuming motors 1 and 2 are left and right wheels
   double linear = msg->linear.x;
   double angular = msg->angular.z;
+
+  if (cmd_vel_filter_alpha_ < 1.0) {
+    const double a = cmd_vel_filter_alpha_;
+    if (!cmd_vel_filter_initialized_) {
+      filtered_cmd_lin_x_ = linear;
+      filtered_cmd_ang_z_ = angular;
+      cmd_vel_filter_initialized_ = true;
+    } else {
+      filtered_cmd_lin_x_ = a * linear + (1.0 - a) * filtered_cmd_lin_x_;
+      filtered_cmd_ang_z_ = a * angular + (1.0 - a) * filtered_cmd_ang_z_;
+    }
+    linear = filtered_cmd_lin_x_;
+    angular = filtered_cmd_ang_z_;
+  }
   
   // Calculate wheel angular velocities (rad/s)
   // Note: Left motor is negated when sent, so we swap angular signs

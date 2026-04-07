@@ -51,6 +51,7 @@ install(TARGETS ${PROJECT_NAME} relay_controller
 
 # Install Python scripts
 install(PROGRAMS
+  scripts/kill_robot_stack.sh
   scripts/rotate_wheel_one_turn.py
   scripts/test_left_wheel_cmdvel.py
   scripts/drive_one_meter.py

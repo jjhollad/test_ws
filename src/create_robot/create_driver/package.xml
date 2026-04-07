@@ -27,6 +27,9 @@
   <depend>joint_state_publisher</depend>
   <depend>rviz2</depend>
 
+  <exec_depend>twist_mux</exec_depend>
+  <exec_depend>nav2_common</exec_depend>
+
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
 

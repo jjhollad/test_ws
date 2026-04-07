@@ -1,0 +1,19 @@
+# Xbox teleop when twist_mux + Nav2 are running: hold enable (default: left trigger, button 6)
+# so teleop does not stream zeros on /cmd_vel_joy and block navigation.
+teleop_twist_joy_node:
+  ros__parameters:
+    axis_linear:
+      x: 1
+    scale_linear:
+      x: 1.0
+    scale_linear_turbo:
+      x: 1.5
+
+    axis_angular:
+      yaw: 0
+    scale_angular:
+      yaw: 2.5
+
+    enable_button: 6
+    enable_turbo_button: 5
+    require_enable_button: true

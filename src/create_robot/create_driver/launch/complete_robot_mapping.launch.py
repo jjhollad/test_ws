@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
-from launch.conditions import IfCondition
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, Command
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
@@ -125,6 +125,13 @@ def generate_launch_description():
         executable='generic_motor_driver',
         name='generic_motor_driver',
         output='screen',
+        parameters=[{
+            'base_frame': 'base_footprint',
+            'odom_frame': 'odom',
+            # Must match URDF joint names so robot_state_publisher can publish wheel TF.
+            'joint_names': ['right_rear_wheel_joint', 'left_rear_wheel_joint'],
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
+        }]
     )
 
     # Relay controller
@@ -152,8 +159,23 @@ def generate_launch_description():
         }]
     )
 
-    # Teleop twist node for cmd_vel driving
-    teleop_twist_joy_node = Node(
+    # Teleop: with Nav2+mux -> cmd_vel_joy (high priority in twist_mux). Nav2 off -> /cmd_vel directly.
+    teleop_twist_joy_muxed = Node(
+        package='teleop_twist_joy',
+        executable='teleop_node',
+        name='teleop_twist_joy_node',
+        output='screen',
+        parameters=[
+            PathJoinSubstitution([
+                FindPackageShare('generic_motor_driver'),
+                'config',
+                'xbox_twist_mux.config.yaml',
+            ])
+        ],
+        remappings=[('/cmd_vel', '/cmd_vel_joy')],
+        condition=IfCondition(LaunchConfiguration('use_nav2')),
+    )
+    teleop_twist_joy_direct = Node(
         package='teleop_twist_joy',
         executable='teleop_node',
         name='teleop_twist_joy_node',
@@ -165,7 +187,31 @@ def generate_launch_description():
                 'xbox.config.yaml'
             ])
         ],
-        remappings=[('/cmd_vel', '/cmd_vel')]
+        remappings=[('/cmd_vel', '/cmd_vel')],
+        condition=UnlessCondition(LaunchConfiguration('use_nav2')),
+    )
+
+    # Mux: joystick (100) > behaviors (50) > navigation (10) -> /cmd_vel
+    twist_mux_node = Node(
+        package='twist_mux',
+        executable='twist_mux',
+        name='twist_mux',
+        output='screen',
+        parameters=[
+            PathJoinSubstitution([
+                FindPackageShare('twist_mux'),
+                'config',
+                'twist_mux_locks.yaml',
+            ]),
+            PathJoinSubstitution([
+                FindPackageShare('generic_motor_driver'),
+                'config',
+                'twist_mux_topics.yaml',
+            ]),
+            {'use_sim_time': LaunchConfiguration('use_sim_time')},
+        ],
+        remappings=[('/cmd_vel_out', '/cmd_vel')],
+        condition=IfCondition(LaunchConfiguration('use_nav2')),
     )
 
     # Optional relay button mapping node (requires joy_teleop package).
@@ -223,13 +269,13 @@ def generate_launch_description():
         ]
     )
 
-    # Nav2 navigation stack
+    # Nav2 (mux-friendly: no direct /cmd_vel; outputs cmd_vel_navigation + cmd_vel_behaviors)
     nav2_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
             PathJoinSubstitution([
-                FindPackageShare('nav2_bringup'),
+                FindPackageShare('generic_motor_driver'),
                 'launch',
-                'navigation_launch.py'
+                'navigation_launch_mux.launch.py'
             ])
         ]),
         condition=IfCondition(LaunchConfiguration('use_nav2')),
@@ -268,7 +314,9 @@ def generate_launch_description():
         motor_driver_node,
         relay_controller_node,
         joy_node,
-        teleop_twist_joy_node,
+        teleop_twist_joy_muxed,
+        teleop_twist_joy_direct,
+        twist_mux_node,
         lidar_node,
         slam_toolbox_node,
         nav2_launch,

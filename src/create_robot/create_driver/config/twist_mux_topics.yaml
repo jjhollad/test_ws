@@ -1,0 +1,23 @@
+# twist_mux input topics (geometry_msgs/Twist). Merged onto /cmd_vel for generic_motor_driver.
+# Higher priority wins when multiple sources are active within timeout.
+#
+# Requires navigation_launch_mux.launch.py so Nav2 publishes:
+#   cmd_vel_navigation  — velocity_smoother output
+#   cmd_vel_behaviors   — behavior_server recoveries
+# Teleop must publish: cmd_vel_joy
+
+twist_mux:
+  ros__parameters:
+    topics:
+      joystick:
+        topic   : cmd_vel_joy
+        timeout : 0.5
+        priority: 100
+      behaviors:
+        topic   : cmd_vel_behaviors
+        timeout : 0.5
+        priority: 50
+      navigation:
+        topic   : cmd_vel_navigation
+        timeout : 0.5
+        priority: 10

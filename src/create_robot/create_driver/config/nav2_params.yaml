@@ -109,9 +109,10 @@ controller_server:
   ros__parameters:
     use_sim_time: False
     controller_frequency: 20.0
-    min_x_velocity_threshold: 0.001
+    # Keep small so Nav2 can command fine rotation / crawl at the goal (large values cause bad final pose).
+    min_x_velocity_threshold: 0.02
     min_y_velocity_threshold: 0.5
-    min_theta_velocity_threshold: 0.001
+    min_theta_velocity_threshold: 0.02
     failure_tolerance: 0.3
     progress_checker_plugin: "progress_checker"
     goal_checker_plugins: ["general_goal_checker"]
@@ -119,7 +120,7 @@ controller_server:
 
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.5
+      required_movement_radius: 0.15
       movement_time_allowance: 10.0
 
     general_goal_checker:
@@ -137,7 +138,7 @@ controller_server:
       max_vel_y: 0.0
       max_vel_theta: 20.0
       min_speed_xy: 0.0
-      max_speed_xy: 0.5
+      max_speed_xy: 10.0 #changed from 0.5 to 10.0 because the robot is slow
       min_speed_theta: 0.0
       acc_lim_x: 2.5
       acc_lim_y: 0.0
@@ -148,24 +149,26 @@ controller_server:
       vx_samples: 20
       vy_samples: 5
       vtheta_samples: 20
-      sim_time: 1.7
+      # Shorter horizon = less “arc planning” that encourages extra rotation before the final settle.
+      sim_time: 1.15
       linear_granularity: 0.05
       angular_granularity: 0.025
       transform_tolerance: 0.2
       xy_goal_tolerance: 0.25
-      trans_stopped_velocity: 0.25
+      trans_stopped_velocity: 0.1 #changed from 0.25 to 0.1 because the robot is slow 
       short_circuit_trajectory_evaluation: True
       stateful: True
-      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      # No GoalAlign: it fights RotateToGoal by aligning to path tangent (extra spins before finishing).
+      # Stronger GoalDist + Oscillation: go toward the goal pose and penalize wiggle trajectories.
+      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "PathAlign", "PathDist", "GoalDist"]
       BaseObstacle.scale: 0.02
-      PathAlign.scale: 32.0
-      PathAlign.forward_point_distance: 0.1
-      GoalAlign.scale: 24.0
-      GoalAlign.forward_point_distance: 0.1
-      PathDist.scale: 32.0
-      GoalDist.scale: 24.0
-      RotateToGoal.scale: 32.0
-      RotateToGoal.slowing_factor: 5.0
+      PathAlign.scale: 6.0
+      PathAlign.forward_point_distance: 0.06
+      PathDist.scale: 24.0
+      GoalDist.scale: 40.0
+      Oscillation.scale: 8.0
+      RotateToGoal.scale: 48.0
+      RotateToGoal.slowing_factor: 6.0
       RotateToGoal.lookahead_time: -1.0
 
 local_costmap:
@@ -180,12 +183,12 @@ local_costmap:
       width: 3
       height: 3
       resolution: 0.05
-      robot_radius: 0.4
+      robot_radius: 0.3 #meters around the robot to avoid obstacles
       plugins: ["voxel_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.9
+        inflation_radius: 0.75 #meters away from obstacles to avoid them
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
         enabled: True
@@ -216,7 +219,7 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_footprint
       use_sim_time: False
-      robot_radius: 0.4
+      robot_radius: 0.3 #meters around the robot to avoid obstacles
       resolution: 0.05
       track_unknown_space: true
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
@@ -240,7 +243,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 2.0
-        inflation_radius: 0.55
+        inflation_radius: 0.4 #meters away from obstacles to avoid them
       always_send_full_costmap: True
 
 map_server:
@@ -323,8 +326,8 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: False
     feedback: "OPEN_LOOP"
-    max_velocity: [0.5, 0.0, 1.0]
-    min_velocity: [-0.5, 0.0, -1.0]
+    max_velocity: [10.0, 0.0, 1.5] #changed from 0.5 to 10.0 because the robot is slow to move forward
+    min_velocity: [-0.5, 0.0, -1.5] #changed from 1.0 to 1.5 because the robot is slow to turn
     max_accel: [2.5, 0.0, 3.2]
     max_decel: [-2.5, 0.0, -3.2]
     odom_topic: "odom"

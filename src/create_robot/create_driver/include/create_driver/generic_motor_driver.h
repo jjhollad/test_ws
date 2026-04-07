@@ -126,6 +126,11 @@ private:
   bool invert_right_encoder_;  // Invert right encoder direction
   bool invert_left_motor_;  // Invert left motor direction (for backwards motors)
   bool invert_right_motor_;  // Invert right motor direction (for backwards motors)
+  /// First-order low-pass on cmd_vel (1.0 = off). Reduces joystick noise / deadzone dither.
+  double cmd_vel_filter_alpha_;
+  double filtered_cmd_lin_x_;
+  double filtered_cmd_ang_z_;
+  bool cmd_vel_filter_initialized_;
   double joint_state_left_sign_;   // RViz-only sign for left joint_state (+1 or -1)
   double joint_state_right_sign_;  // RViz-only sign for right joint_state (+1 or -1)
   bool apply_gear_reduction_;  // If true, divide encoder by gear ratio (encoder = motor counts). If false, encoder already in wheel rotations.
