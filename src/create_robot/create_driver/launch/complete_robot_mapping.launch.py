@@ -8,22 +8,17 @@ from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from launch_ros.parameter_descriptions import ParameterValue
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import get_package_share_directory, PackageNotFoundError
 import os
 
 def generate_launch_description():
     # Declare launch arguments
-    dev_arg = DeclareLaunchArgument(
-        'dev',
-        default_value='/dev/motor_controller',
-        description='Serial device path for motor controller'
+    joy_dev_arg = DeclareLaunchArgument(
+        'joy_dev',
+        default_value='/dev/input/js0',
+        description='Joystick device path'
     )
-    
-    baud_arg = DeclareLaunchArgument(
-        'baud',
-        default_value='115200',
-        description='Serial baud rate for motor controller'
-    )
+
     
     relay_dev_arg = DeclareLaunchArgument(
         'relay_dev',
@@ -35,102 +30,6 @@ def generate_launch_description():
         'relay_baud',
         default_value='115200',
         description='Serial baud rate for Arduino relay controller'
-    )
-    
-    relay_status_rate_arg = DeclareLaunchArgument(
-        'relay_status_publish_rate',
-        default_value='1.0',
-        description='Relay status publishing rate (Hz)'
-    )
-    
-    wheel_base_arg = DeclareLaunchArgument(
-        'wheel_base',
-        default_value='0.57',
-        description='Distance between left and right wheels (meters)'
-    )
-    
-    wheel_radius_arg = DeclareLaunchArgument(
-        'wheel_radius',
-        default_value='0.12',
-        description='Wheel radius (meters)'
-    )
-    
-    motor_gear_ratio_arg = DeclareLaunchArgument(
-        'motor_gear_ratio',
-        default_value='90.0',
-        description='Motor internal gear ratio'
-    )
-    
-    belt_drive_ratio_arg = DeclareLaunchArgument(
-        'belt_drive_ratio',
-        default_value='6.4',
-        description='Belt drive ratio'
-    )
-    
-    apply_gear_reduction_arg = DeclareLaunchArgument(
-        'apply_gear_reduction',
-        default_value='true',
-        description='If true, divide encoder by gear ratio (encoder = motor counts). If false, encoder already in wheel rotations.'
-    )
-    
-    encoder_reduction_factor_arg = DeclareLaunchArgument(
-        'encoder_reduction_factor',
-        default_value='68.17',  # Calibrated: encoder read 1.0m when robot moved 0.83m (with straight-line control)
-        description='Additional reduction factor to multiply the gear reduction.'
-    )
-    
-    rotation_scale_arg = DeclareLaunchArgument(
-        'rotation_scale',
-        default_value='2.0',
-        description='Scale factor applied to angular velocity/rotation (e.g., 2.0 doubles rotation)'
-    )
-    
-    loop_hz_arg = DeclareLaunchArgument(
-        'loop_hz',
-        default_value='20.0',
-        description='Update loop frequency (Hz)'
-    )
-    
-    max_motor_speed_arg = DeclareLaunchArgument(
-        'max_motor_speed',
-        default_value='1000.0',
-        description='Maximum motor speed'
-    )
-    
-    invert_left_encoder_arg = DeclareLaunchArgument(
-        'invert_left_encoder',
-        default_value='false',
-        description='Invert left encoder direction'
-    )
-    
-    invert_right_encoder_arg = DeclareLaunchArgument(
-        'invert_right_encoder',
-        default_value='true',
-        description='Invert right encoder direction'
-    )
-    
-    invert_left_motor_arg = DeclareLaunchArgument(
-        'invert_left_motor',
-        default_value='true',
-        description='Invert left motor direction'
-    )
-    
-    invert_right_motor_arg = DeclareLaunchArgument(
-        'invert_right_motor',
-        default_value='true',
-        description='Invert right motor direction'
-    )
-    
-    base_frame_arg = DeclareLaunchArgument(
-        'base_frame',
-        default_value='base_footprint',
-        description='Base frame ID'
-    )
-    
-    odom_frame_arg = DeclareLaunchArgument(
-        'odom_frame',
-        default_value='odom',
-        description='Odometry frame ID'
     )
     
     use_sim_time_arg = DeclareLaunchArgument(
@@ -197,7 +96,7 @@ def generate_launch_description():
     
     use_nav2_arg = DeclareLaunchArgument(
         'use_nav2',
-        default_value='false',
+        default_value='true',
         description='Enable Nav2 navigation stack'
     )
 
@@ -226,28 +125,6 @@ def generate_launch_description():
         executable='generic_motor_driver',
         name='generic_motor_driver',
         output='screen',
-        parameters=[{
-            'dev': LaunchConfiguration('dev'),
-            'baud': LaunchConfiguration('baud'),
-            'wheel_base': LaunchConfiguration('wheel_base'),
-            'wheel_radius': LaunchConfiguration('wheel_radius'),
-            'motor_gear_ratio': LaunchConfiguration('motor_gear_ratio'),
-            'belt_drive_ratio': LaunchConfiguration('belt_drive_ratio'),
-            'apply_gear_reduction': LaunchConfiguration('apply_gear_reduction'),
-            'encoder_reduction_factor': LaunchConfiguration('encoder_reduction_factor'),
-            'rotation_scale': LaunchConfiguration('rotation_scale'),
-            'loop_hz': LaunchConfiguration('loop_hz'),
-            'max_motor_speed': LaunchConfiguration('max_motor_speed'),
-            'invert_left_encoder': LaunchConfiguration('invert_left_encoder'),
-            'invert_right_encoder': LaunchConfiguration('invert_right_encoder'),
-            'invert_left_motor': LaunchConfiguration('invert_left_motor'),
-            'invert_right_motor': LaunchConfiguration('invert_right_motor'),
-            'base_frame': LaunchConfiguration('base_frame'),
-            'odom_frame': LaunchConfiguration('odom_frame'),
-            'publish_tf': True,
-            'joint_names': ['left_rear_wheel_joint', 'right_rear_wheel_joint'],
-            'use_sim_time': LaunchConfiguration('use_sim_time'),
-        }]
     )
 
     # Relay controller
@@ -259,9 +136,57 @@ def generate_launch_description():
         parameters=[{
             'dev': LaunchConfiguration('relay_dev'),
             'baud': LaunchConfiguration('relay_baud'),
-            'status_publish_rate': LaunchConfiguration('relay_status_publish_rate'),
         }]
     )
+
+    # Joystick node (same behavior as rectangular_robot launch)
+    joy_node = Node(
+        package='joy',
+        executable='joy_node',
+        name='joy_node',
+        output='screen',
+        parameters=[{
+            'dev': LaunchConfiguration('joy_dev'),
+            'deadzone': 0.2,
+            'autorepeat_rate': 20.0,
+        }]
+    )
+
+    # Teleop twist node for cmd_vel driving
+    teleop_twist_joy_node = Node(
+        package='teleop_twist_joy',
+        executable='teleop_node',
+        name='teleop_twist_joy_node',
+        output='screen',
+        parameters=[
+            PathJoinSubstitution([
+                FindPackageShare('teleop_twist_joy'),
+                'config',
+                'xbox.config.yaml'
+            ])
+        ],
+        remappings=[('/cmd_vel', '/cmd_vel')]
+    )
+
+    # Optional relay button mapping node (requires joy_teleop package).
+    relay_button_node = None
+    try:
+        get_package_share_directory('joy_teleop')
+        relay_button_node = Node(
+            package='joy_teleop',
+            executable='joy_teleop',
+            name='relay_button_teleop',
+            output='screen',
+            parameters=[
+                PathJoinSubstitution([
+                    FindPackageShare('generic_motor_driver'),
+                    'config',
+                    'xbox_relay_buttons.yaml'
+                ])
+            ]
+        )
+    except PackageNotFoundError:
+        relay_button_node = None
 
     # RPLidar node
     lidar_node = Node(
@@ -323,27 +248,11 @@ def generate_launch_description():
         arguments=['-d', LaunchConfiguration('rviz_config')]
     )
 
-    return LaunchDescription([
+    launch_items = [
         # Launch arguments
-        dev_arg,
-        baud_arg,
+        joy_dev_arg,
         relay_dev_arg,
         relay_baud_arg,
-        relay_status_rate_arg,
-        wheel_base_arg,
-        wheel_radius_arg,
-        motor_gear_ratio_arg,
-        belt_drive_ratio_arg,
-        apply_gear_reduction_arg,
-        encoder_reduction_factor_arg,
-        loop_hz_arg,
-        max_motor_speed_arg,
-        invert_left_encoder_arg,
-        invert_right_encoder_arg,
-        invert_left_motor_arg,
-        invert_right_motor_arg,
-        base_frame_arg,
-        odom_frame_arg,
         use_sim_time_arg,
         rviz_arg,
         rviz_config_arg,
@@ -353,15 +262,21 @@ def generate_launch_description():
         slam_toolbox_params_arg,
         nav2_params_file_arg,
         use_nav2_arg,
-        rotation_scale_arg,
         
         # Nodes
         robot_state_publisher_node,
         motor_driver_node,
         relay_controller_node,
+        joy_node,
+        teleop_twist_joy_node,
         lidar_node,
         slam_toolbox_node,
         nav2_launch,
         rviz_node,
-    ])
+    ]
+
+    if relay_button_node is not None:
+        launch_items.append(relay_button_node)
+
+    return LaunchDescription(launch_items)
 

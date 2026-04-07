@@ -1,0 +1,19 @@
+relay_button_teleop:
+  ros__parameters:
+    relay_all_on_with_x:
+      type: topic
+      interface_type: std_msgs/msg/UInt8MultiArray
+      topic_name: /relay_all
+      deadman_buttons: [0]
+      message_value:
+        data:
+          value: [1, 1, 1, 1]
+
+    relay_all_off_with_y:
+      type: topic
+      interface_type: std_msgs/msg/UInt8MultiArray
+      topic_name: /relay_all
+      deadman_buttons: [1]
+      message_value:
+        data:
+          value: [0, 0, 0, 0]

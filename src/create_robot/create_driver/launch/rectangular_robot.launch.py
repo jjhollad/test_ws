@@ -6,11 +6,17 @@ from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, Comm
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
-from launch.launch_description_sources import PythonLaunchDescriptionSource
+from ament_index_python.packages import get_package_share_directory, PackageNotFoundError
 
 def generate_launch_description():
     # Declare launch arguments
     
+    joy_dev_arg = DeclareLaunchArgument(
+        'joy_dev',
+        default_value='/dev/input/js0',
+        description='Joystick device path'
+    )
+
     use_sim_time_arg = DeclareLaunchArgument(
         'use_sim_time',
         default_value='false',
@@ -21,6 +27,12 @@ def generate_launch_description():
         'rviz',
         default_value='true',
         description='Launch RViz'
+    )
+
+    relay_dev_arg = DeclareLaunchArgument(
+        'relay_dev',
+        default_value='/dev/ttyACM0',
+        description='Serial device path for relay controller'
     )
     
     # Get the URDF file path
@@ -56,6 +68,68 @@ def generate_launch_description():
         }]
     )
 
+    # Relay controller node
+    relay_controller_node = Node(
+        package='generic_motor_driver',
+        executable='relay_controller',
+        name='relay_controller',
+        output='screen',
+        parameters=[{
+            'dev': LaunchConfiguration('relay_dev'),
+            'baud': 115200,
+            'status_publish_rate': 1.0,
+        }]
+    )
+
+    # Joystick node
+    joy_node = Node(
+        package='joy',
+        executable='joy_node',
+        name='joy_node',
+        output='screen',
+        parameters=[{
+            'dev': LaunchConfiguration('joy_dev'),
+            'deadzone': 0.2,
+            'autorepeat_rate': 20.0,
+        }]
+    )
+
+    # Teleop twist node for cmd_vel driving
+    teleop_twist_joy_node = Node(
+        package='teleop_twist_joy',
+        executable='teleop_node',
+        name='teleop_twist_joy_node',
+        output='screen',
+        parameters=[
+            PathJoinSubstitution([
+                FindPackageShare('teleop_twist_joy'),
+                'config',
+                'xbox.config.yaml'
+            ])
+        ],
+        remappings=[('/cmd_vel', '/cmd_vel')]
+    )
+
+    # Optional relay button mapping node (requires joy_teleop package).
+    relay_button_node = None
+    try:
+        get_package_share_directory('joy_teleop')
+        relay_button_node = Node(
+            package='joy_teleop',
+            executable='joy_teleop',
+            name='relay_button_teleop',
+            output='screen',
+            parameters=[
+                PathJoinSubstitution([
+                    FindPackageShare('generic_motor_driver'),
+                    'config',
+                    'xbox_relay_buttons.yaml'
+                ])
+            ]
+        )
+    except PackageNotFoundError:
+        relay_button_node = None
+
     # Note: base_footprint to base_link transform is defined in URDF, no need for static transform
 
     # RViz
@@ -67,13 +141,23 @@ def generate_launch_description():
         arguments=['-d', '/home/user/test_ws/src/create_robot/create_driver/rviz/rectangular_robot.rviz']
     )
 
-    return LaunchDescription([
+    launch_items = [
         # Launch arguments
+        joy_dev_arg,
         use_sim_time_arg,
         rviz_arg,
+        relay_dev_arg,
         
         # Nodes
         robot_state_publisher_node,
         motor_driver_node,
+        relay_controller_node,
+        joy_node,
+        teleop_twist_joy_node,
         rviz_node,
-    ])
+    ]
+
+    if relay_button_node is not None:
+        launch_items.append(relay_button_node)
+
+    return LaunchDescription(launch_items)

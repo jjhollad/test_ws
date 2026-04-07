@@ -75,7 +75,7 @@ GenericMotorDriver::GenericMotorDriver()
   latch_duration_ = rclcpp::Duration::from_seconds(declare_parameter<double>("latch_cmd_duration", 0.2));
   loop_hz_ = declare_parameter<double>("loop_hz", 20.0);  // Default 20 Hz for lower latency
   publish_tf_ = declare_parameter<bool>("publish_tf", true);
-  max_motor_speed_ = declare_parameter<double>("max_motor_speed", 1000.0);
+  max_motor_speed_ = declare_parameter<double>("max_motor_speed", 980.0);
   invert_left_encoder_ = declare_parameter<bool>("invert_left_encoder", false);
   invert_right_encoder_ = declare_parameter<bool>("invert_right_encoder", true);
   invert_left_motor_ = declare_parameter<bool>("invert_left_motor", false);
