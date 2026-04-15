@@ -93,4 +93,10 @@ install(DIRECTORY config/
   FILES_MATCHING PATTERN "*.yaml"
 )
 
+# Install custom simulation worlds
+install(DIRECTORY worlds/
+  DESTINATION share/${PROJECT_NAME}/worlds
+  FILES_MATCHING PATTERN "*.world"
+)
+
 ament_package()

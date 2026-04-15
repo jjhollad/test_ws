@@ -1,0 +1,91 @@
+<?xml version="1.0"?>
+<sdf version="1.6">
+  <world name="square_building_10ft_hallway">
+    <include>
+      <uri>model://sun</uri>
+    </include>
+
+    <scene>
+      <shadows>false</shadows>
+    </scene>
+
+    <gui fullscreen="0">
+      <camera name="user_camera">
+        <pose frame="">0 0 42 0 1.57 0</pose>
+        <view_controller>orbit</view_controller>
+        <projection_type>perspective</projection_type>
+      </camera>
+    </gui>
+
+    <physics type="ode">
+      <real_time_update_rate>1000.0</real_time_update_rate>
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1</real_time_factor>
+    </physics>
+
+    <!-- Large floor -->
+    <model name="floor">
+      <static>true</static>
+      <link name="floor_link">
+        <collision name="floor_collision">
+          <pose>0 0 0 0 0 0</pose>
+          <geometry>
+            <box><size>100 100 0.05</size></box>
+          </geometry>
+        </collision>
+        <visual name="floor_visual">
+          <pose>0 0 0 0 0 0</pose>
+          <geometry>
+            <box><size>100 100 0.05</size></box>
+          </geometry>
+          <material>
+            <ambient>0.72 0.72 0.72 1</ambient>
+            <diffuse>0.72 0.72 0.72 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!--
+      Building concept:
+      - Outer square and inner square form a ring hallway.
+      - Nominal hallway width: 12 ft (3.6576 m)
+      - Wall-attached jut-outs reduce local width to 10 ft (3.048 m)
+    -->
+    <model name="square_building">
+      <static>true</static>
+      <link name="walls">
+        <!-- Outer square -->
+        <collision name="outer_north_c"><pose>0 14.0 1.25 0 0 0</pose><geometry><box><size>28.0 0.35 2.5</size></box></geometry></collision>
+        <visual    name="outer_north_v"><pose>0 14.0 1.25 0 0 0</pose><geometry><box><size>28.0 0.35 2.5</size></box></geometry></visual>
+        <collision name="outer_south_c"><pose>0 -14.0 1.25 0 0 0</pose><geometry><box><size>28.0 0.35 2.5</size></box></geometry></collision>
+        <visual    name="outer_south_v"><pose>0 -14.0 1.25 0 0 0</pose><geometry><box><size>28.0 0.35 2.5</size></box></geometry></visual>
+        <collision name="outer_east_c"><pose>14.0 0 1.25 0 0 0</pose><geometry><box><size>0.35 28.0 2.5</size></box></geometry></collision>
+        <visual    name="outer_east_v"><pose>14.0 0 1.25 0 0 0</pose><geometry><box><size>0.35 28.0 2.5</size></box></geometry></visual>
+        <collision name="outer_west_c"><pose>-14.0 0 1.25 0 0 0</pose><geometry><box><size>0.35 28.0 2.5</size></box></geometry></collision>
+        <visual    name="outer_west_v"><pose>-14.0 0 1.25 0 0 0</pose><geometry><box><size>0.35 28.0 2.5</size></box></geometry></visual>
+
+        <!-- Inner square (12 ft nominal hallway) -->
+        <collision name="inner_north_c"><pose>0 9.9924 1.25 0 0 0</pose><geometry><box><size>19.9848 0.35 2.5</size></box></geometry></collision>
+        <visual    name="inner_north_v"><pose>0 9.9924 1.25 0 0 0</pose><geometry><box><size>19.9848 0.35 2.5</size></box></geometry></visual>
+        <collision name="inner_south_c"><pose>0 -9.9924 1.25 0 0 0</pose><geometry><box><size>19.9848 0.35 2.5</size></box></geometry></collision>
+        <visual    name="inner_south_v"><pose>0 -9.9924 1.25 0 0 0</pose><geometry><box><size>19.9848 0.35 2.5</size></box></geometry></visual>
+        <collision name="inner_east_c"><pose>9.9924 0 1.25 0 0 0</pose><geometry><box><size>0.35 19.9848 2.5</size></box></geometry></collision>
+        <visual    name="inner_east_v"><pose>9.9924 0 1.25 0 0 0</pose><geometry><box><size>0.35 19.9848 2.5</size></box></geometry></visual>
+        <collision name="inner_west_c"><pose>-9.9924 0 1.25 0 0 0</pose><geometry><box><size>0.35 19.9848 2.5</size></box></geometry></collision>
+        <visual    name="inner_west_v"><pose>-9.9924 0 1.25 0 0 0</pose><geometry><box><size>0.35 19.9848 2.5</size></box></geometry></visual>
+
+        <!-- Wall-attached jut-outs (2 ft deep = 0.6096 m), making local hallway width 10 ft -->
+        <!-- North wall jut-out (attached to outer wall inner face) -->
+        <collision name="jut_north_c"><pose>-6.0 13.5202 1.25 0 0 0</pose><geometry><box><size>2.6 0.6096 2.5</size></box></geometry></collision>
+        <visual    name="jut_north_v"><pose>-6.0 13.5202 1.25 0 0 0</pose><geometry><box><size>2.6 0.6096 2.5</size></box></geometry></visual>
+        <!-- East wall jut-out -->
+        <collision name="jut_east_c"><pose>13.5202 4.8 1.25 0 0 0</pose><geometry><box><size>0.6096 2.8 2.5</size></box></geometry></collision>
+        <visual    name="jut_east_v"><pose>13.5202 4.8 1.25 0 0 0</pose><geometry><box><size>0.6096 2.8 2.5</size></box></geometry></visual>
+        <!-- South wall jut-out -->
+        <collision name="jut_south_c"><pose>5.5 -13.5202 1.25 0 0 0</pose><geometry><box><size>3.0 0.6096 2.5</size></box></geometry></collision>
+        <visual    name="jut_south_v"><pose>5.5 -13.5202 1.25 0 0 0</pose><geometry><box><size>3.0 0.6096 2.5</size></box></geometry></visual>
+      </link>
+    </model>
+  </world>
+</sdf>
