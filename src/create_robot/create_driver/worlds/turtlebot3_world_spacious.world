@@ -18,24 +18,8 @@
     </gui>
 
     <physics type="ode">
-      <real_time_update_rate>1000.0</real_time_update_rate>
-      <max_step_size>0.0005</max_step_size>
+      <max_step_size>0.001</max_step_size>
       <real_time_factor>1</real_time_factor>
-      <ode>
-        <solver>
-          <type>quick</type>
-          <iters>300</iters>
-          <precon_iters>0</precon_iters>
-          <sor>1.3</sor>
-          <use_dynamic_moi_rescaling>1</use_dynamic_moi_rescaling>
-        </solver>
-        <constraints>
-          <cfm>0.00001</cfm>
-          <erp>0.2</erp>
-          <contact_max_correcting_vel>100.0</contact_max_correcting_vel>
-          <contact_surface_layer>0.001</contact_surface_layer>
-        </constraints>
-      </ode>
     </physics>
 
     <!-- Large floor -->
@@ -49,22 +33,6 @@
               <size>80 80 0.05</size>
             </box>
           </geometry>
-          <surface>
-            <friction>
-              <ode>
-                <mu>2.0</mu>
-                <mu2>2.0</mu2>
-              </ode>
-            </friction>
-            <contact>
-              <ode>
-                <kp>1000000.0</kp>
-                <kd>1.0</kd>
-                <min_depth>0.001</min_depth>
-                <max_vel>0.0</max_vel>
-              </ode>
-            </contact>
-          </surface>
         </collision>
         <visual name="floor_visual">
           <pose>0 0 0 0 0 0</pose>

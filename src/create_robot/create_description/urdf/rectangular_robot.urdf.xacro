@@ -38,8 +38,9 @@
   <xacro:property name="wheel_separation" value="0.57" />  <!-- Distance between rear wheels -->
   <!-- Note: Rear wheels are forward by one wheel radius (origin is between rear wheels) -->
   
-  <!-- Caster wheel properties -->
-  <xacro:property name="caster_radius" value="0.12" />
+  <!-- Caster: keep radius == wheel_radius so sphere center height matches rear axle height (level base).
+       If caster_radius < wheel_radius, the front sits low and the chassis pitches nose-down (and lidar tilts). -->
+  <xacro:property name="caster_radius" value="${wheel_radius}" />
   <xacro:property name="caster_mass" value="0.5" />
   <!-- Caster at front of robot (base extends from x=0 to x=base_length, center at base_length/2) -->
   <xacro:property name="caster_x_offset" value="${base_length}" />  <!-- Front edge of base -->
@@ -80,8 +81,6 @@
       <child link="${name}"/>
       <origin xyz="${x} ${y} ${z}" rpy="0 0 0"/>
       <axis xyz="${axis_xyz}"/>
-      <!-- Stronger damping to suppress residual idle creep in Gazebo Classic. -->
-      <dynamics damping="0.5" friction="0.0"/>
     </joint>
   </xacro:macro>
 
@@ -108,14 +107,6 @@
       <inertia ixx="1.0" ixy="0" ixz="0" iyy="1.0" iyz="0" izz="1.0"/>
     </inertial>
   </link>
-
-  <!-- Add small body damping so the chassis settles at idle in simulation. -->
-  <gazebo reference="base_link">
-    <velocity_decay>
-      <linear>1.0</linear>
-      <angular>1.0</angular>
-    </velocity_decay>
-  </gazebo>
 
   <!-- Rear wheels for Gazebo diff-drive: keep both joint axes aligned (+Y) so forward cmd drives straight. -->
   <xacro:wheel name="left_rear_wheel" x="${wheel_radius}" y="${wheel_separation/2}" z="${wheel_radius}" axis_xyz="0 1 0"/>
@@ -146,40 +137,14 @@
   <joint name="front_caster_wheel_joint" type="fixed">
     <parent link="base_link"/>
     <child link="front_caster_wheel"/>
-    <!-- Caster at front of robot, at ground level -->
-    <origin xyz="${caster_x_offset} 0 ${caster_radius}" rpy="0 0 0"/>
+    <!-- Sphere center at same z as rear wheel centers (wheel_radius) so all contacts lie on z=0 when base is level. -->
+    <origin xyz="${caster_x_offset} 0 ${wheel_radius}" rpy="0 0 0"/>
   </joint>
 
-  <!-- Front caster with moderate contact (avoid injecting forward creep). -->
+  <!-- Front caster: zero Coulomb friction (ideal ball; avoids scrub braking turns). -->
   <gazebo reference="front_caster_wheel">
-    <mu1>0.05</mu1>
-    <mu2>0.05</mu2>
-    <kp>1000000.0</kp>
-    <kd>1.0</kd>
-    <minDepth>0.001</minDepth>
-    <maxVel>0.0</maxVel>
-  </gazebo>
-
-  <!-- Rear drive wheel contact tuning: high traction, low slip. -->
-  <gazebo reference="left_rear_wheel">
-    <mu1>1.5</mu1>
-    <mu2>1.5</mu2>
-    <slip1>0.0</slip1>
-    <slip2>0.0</slip2>
-    <kp>1000000.0</kp>
-    <kd>1.0</kd>
-    <minDepth>0.001</minDepth>
-    <maxVel>0.0</maxVel>
-  </gazebo>
-  <gazebo reference="right_rear_wheel">
-    <mu1>1.5</mu1>
-    <mu2>1.5</mu2>
-    <slip1>0.0</slip1>
-    <slip2>0.0</slip2>
-    <kp>1000000.0</kp>
-    <kd>1.0</kd>
-    <minDepth>0.001</minDepth>
-    <maxVel>0.0</maxVel>
+    <mu1>0.0</mu1>
+    <mu2>0.0</mu2>
   </gazebo>
 
   <!-- Sweeping Wheel (parallel to floor - horizontal cylinder) -->
@@ -222,7 +187,7 @@
     <origin xyz="${wheel_radius} 0 0" rpy="0 0 0"/>
   </joint>
 
-  <!-- Keep lidar directly over rear axle (real robot mounting), raise height to reduce wheel returns. -->
+  <!-- Keep lidar directly over rear axle (real robot mounting). -->
   <xacro:lidar parent_link="base_link" x="${wheel_radius}" y="0" z="${base_height + 0.25}"/>
 
   <!-- Gazebo diff-drive for Classic simulation -->
@@ -239,7 +204,6 @@
       <wheel_diameter>${2.0 * wheel_radius}</wheel_diameter>
       <max_wheel_torque>30.0</max_wheel_torque>
       <max_wheel_acceleration>3.0</max_wheel_acceleration>
-      <command_timeout>0.25</command_timeout>
       <publish_odom>true</publish_odom>
       <publish_odom_tf>true</publish_odom_tf>
       <publish_wheel_tf>false</publish_wheel_tf>
