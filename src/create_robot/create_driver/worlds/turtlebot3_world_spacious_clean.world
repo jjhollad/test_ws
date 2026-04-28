@@ -1,0 +1,64 @@
+<?xml version="1.0"?>
+<sdf version="1.6">
+  <world name="rectangular_nav2_world_clean">
+    <include>
+      <uri>model://sun</uri>
+    </include>
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+
+    <scene>
+      <shadows>false</shadows>
+    </scene>
+
+    <gui fullscreen="0">
+      <camera name="user_camera">
+        <pose frame="">0 0 40 0 1.57 0</pose>
+        <view_controller>orbit</view_controller>
+        <projection_type>perspective</projection_type>
+      </camera>
+    </gui>
+
+    <!-- Boundary walls -->
+    <model name="boundary_walls">
+      <static>true</static>
+      <link name="walls">
+        <collision name="north_collision"><pose>0 39 1 0 0 0</pose><geometry><box><size>80 0.4 2</size></box></geometry></collision>
+        <visual    name="north_visual"><pose>0 39 1 0 0 0</pose><geometry><box><size>80 0.4 2</size></box></geometry></visual>
+        <collision name="south_collision"><pose>0 -39 1 0 0 0</pose><geometry><box><size>80 0.4 2</size></box></geometry></collision>
+        <visual    name="south_visual"><pose>0 -39 1 0 0 0</pose><geometry><box><size>80 0.4 2</size></box></geometry></visual>
+        <collision name="east_collision"><pose>39 0 1 0 0 0</pose><geometry><box><size>0.4 80 2</size></box></geometry></collision>
+        <visual    name="east_visual"><pose>39 0 1 0 0 0</pose><geometry><box><size>0.4 80 2</size></box></geometry></visual>
+        <collision name="west_collision"><pose>-39 0 1 0 0 0</pose><geometry><box><size>0.4 80 2</size></box></geometry></collision>
+        <visual    name="west_visual"><pose>-39 0 1 0 0 0</pose><geometry><box><size>0.4 80 2</size></box></geometry></visual>
+      </link>
+    </model>
+
+    <!-- Spaced obstacle field -->
+    <model name="obstacles">
+      <static>true</static>
+      <link name="obstacles_link">
+        <!-- Cylinders -->
+        <collision name="cyl_1"><pose>-18 -18 0.5 0 0 0</pose><geometry><cylinder><radius>0.4</radius><length>1.0</length></cylinder></geometry></collision>
+        <visual    name="cyl_1_v"><pose>-18 -18 0.5 0 0 0</pose><geometry><cylinder><radius>0.4</radius><length>1.0</length></cylinder></geometry></visual>
+        <collision name="cyl_2"><pose>-18 18 0.5 0 0 0</pose><geometry><cylinder><radius>0.4</radius><length>1.0</length></cylinder></geometry></collision>
+        <visual    name="cyl_2_v"><pose>-18 18 0.5 0 0 0</pose><geometry><cylinder><radius>0.4</radius><length>1.0</length></cylinder></geometry></visual>
+        <collision name="cyl_3"><pose>18 -18 0.5 0 0 0</pose><geometry><cylinder><radius>0.4</radius><length>1.0</length></cylinder></geometry></collision>
+        <visual    name="cyl_3_v"><pose>18 -18 0.5 0 0 0</pose><geometry><cylinder><radius>0.4</radius><length>1.0</length></cylinder></geometry></visual>
+        <collision name="cyl_4"><pose>18 18 0.5 0 0 0</pose><geometry><cylinder><radius>0.4</radius><length>1.0</length></cylinder></geometry></collision>
+        <visual    name="cyl_4_v"><pose>18 18 0.5 0 0 0</pose><geometry><cylinder><radius>0.4</radius><length>1.0</length></cylinder></geometry></visual>
+
+        <!-- Boxes -->
+        <collision name="box_1"><pose>0 -24 0.75 0 0 0</pose><geometry><box><size>1.2 1.2 1.5</size></box></geometry></collision>
+        <visual    name="box_1_v"><pose>0 -24 0.75 0 0 0</pose><geometry><box><size>1.2 1.2 1.5</size></box></geometry></visual>
+        <collision name="box_2"><pose>0 24 0.75 0 0 0</pose><geometry><box><size>1.2 1.2 1.5</size></box></geometry></collision>
+        <visual    name="box_2_v"><pose>0 24 0.75 0 0 0</pose><geometry><box><size>1.2 1.2 1.5</size></box></geometry></visual>
+        <collision name="box_3"><pose>-24 0 0.75 0 0 0</pose><geometry><box><size>1.2 1.2 1.5</size></box></geometry></collision>
+        <visual    name="box_3_v"><pose>-24 0 0.75 0 0 0</pose><geometry><box><size>1.2 1.2 1.5</size></box></geometry></visual>
+        <collision name="box_4"><pose>24 0 0.75 0 0 0</pose><geometry><box><size>1.2 1.2 1.5</size></box></geometry></collision>
+        <visual    name="box_4_v"><pose>24 0 0.75 0 0 0</pose><geometry><box><size>1.2 1.2 1.5</size></box></geometry></visual>
+      </link>
+    </model>
+  </world>
+</sdf>

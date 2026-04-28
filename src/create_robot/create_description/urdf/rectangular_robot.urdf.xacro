@@ -48,7 +48,8 @@
   <!-- Sweeping wheel properties -->
   <xacro:property name="sweep_wheel_radius" value="0.15" />
   <xacro:property name="sweep_wheel_length" value="0.03" />
-  <xacro:property name="sweep_wheel_mass" value="1.5" />
+  <!-- Non-physical visual marker only; Nav2 footprint handles avoidance envelope. -->
+  <xacro:property name="sweep_wheel_mass" value="0.0001" />
   <!-- Sweep wheel at front of robot -->
   <xacro:property name="sweep_wheel_x" value="${base_length}" />  <!-- Front edge of base -->
   <xacro:property name="sweep_wheel_y" value="-0.275" />  <!-- Negative y = right side -->
@@ -111,7 +112,6 @@
   <!-- Rear wheels for Gazebo diff-drive: keep both joint axes aligned (+Y) so forward cmd drives straight. -->
   <xacro:wheel name="left_rear_wheel" x="${wheel_radius}" y="${wheel_separation/2}" z="${wheel_radius}" axis_xyz="0 1 0"/>
   <xacro:wheel name="right_rear_wheel" x="${wheel_radius}" y="${-wheel_separation/2}" z="${wheel_radius}" axis_xyz="0 1 0"/>
-
   <!-- Front Caster Wheel -->
   <link name="front_caster_wheel">
     <visual>
@@ -156,16 +156,11 @@
       </geometry>
       <material name="orange"/>
     </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <cylinder radius="${sweep_wheel_radius}" length="${sweep_wheel_length}"/>
-      </geometry>
-    </collision>
+    <!-- No collision on purpose: keep this link out of Gazebo contact dynamics. -->
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <mass value="${sweep_wheel_mass}"/>
-      <inertia ixx="0.15" ixy="0" ixz="0" iyy="0.15" iyz="0" izz="0.15"/>
+      <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
     </inertial>
   </link>
 
@@ -204,6 +199,7 @@
       <wheel_diameter>${2.0 * wheel_radius}</wheel_diameter>
       <max_wheel_torque>30.0</max_wheel_torque>
       <max_wheel_acceleration>3.0</max_wheel_acceleration>
+      <command_timeout>0.25</command_timeout>
       <publish_odom>true</publish_odom>
       <publish_odom_tf>true</publish_odom_tf>
       <publish_wheel_tf>false</publish_wheel_tf>

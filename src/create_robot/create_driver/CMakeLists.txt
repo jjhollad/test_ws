@@ -57,6 +57,7 @@ install(PROGRAMS
   scripts/drive_one_meter.py
   scripts/rotate_one_revolution.py
   scripts/monitor_cmd_vel.py
+  scripts/analyze_cmd_vel_and_drift.py
   scripts/monitor_motor_speeds.py
   scripts/monitor_odom.py
   scripts/log_serial_communication.py
