@@ -92,6 +92,24 @@ def generate_launch_description():
         default_value='true',
         description='Invert right motor direction (fix backwards motors)'
     )
+
+    swap_motors_arg = DeclareLaunchArgument(
+        'swap_motors',
+        default_value='true',
+        description='Swap motor controller channels so M1 is treated as right and M2 as left'
+    )
+
+    linear_command_sign_arg = DeclareLaunchArgument(
+        'linear_command_sign',
+        default_value='-1.0',
+        description='Use -1.0 when positive cmd_vel linear.x drives the robot backward'
+    )
+
+    linear_odom_sign_arg = DeclareLaunchArgument(
+        'linear_odom_sign',
+        default_value='-1.0',
+        description='Use -1.0 when forward robot motion appears backward in odom/RViz'
+    )
     
     base_frame_arg = DeclareLaunchArgument(
         'base_frame',
@@ -160,6 +178,9 @@ def generate_launch_description():
             'invert_right_encoder': LaunchConfiguration('invert_right_encoder'),
             'invert_left_motor': LaunchConfiguration('invert_left_motor'),
             'invert_right_motor': LaunchConfiguration('invert_right_motor'),
+            'swap_motors': LaunchConfiguration('swap_motors'),
+            'linear_command_sign': LaunchConfiguration('linear_command_sign'),
+            'linear_odom_sign': LaunchConfiguration('linear_odom_sign'),
             'base_frame': LaunchConfiguration('base_frame'),
             'odom_frame': LaunchConfiguration('odom_frame'),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
@@ -228,6 +249,9 @@ def generate_launch_description():
         invert_right_encoder_arg,
         invert_left_motor_arg,
         invert_right_motor_arg,
+        swap_motors_arg,
+        linear_command_sign_arg,
+        linear_odom_sign_arg,
         base_frame_arg,
         odom_frame_arg,
         use_sim_time_arg,
@@ -244,4 +268,3 @@ def generate_launch_description():
         # Optional navigation
         # nav2_launch,
     ])
-

@@ -129,7 +129,10 @@ def generate_launch_description():
             'base_frame': 'base_footprint',
             'odom_frame': 'odom',
             # Must match URDF joint names so robot_state_publisher can publish wheel TF.
-            'joint_names': ['right_rear_wheel_joint', 'left_rear_wheel_joint'],
+            'joint_names': ['left_rear_wheel_joint', 'right_rear_wheel_joint'],
+            'swap_motors': True,
+            'linear_command_sign': -1.0,
+            'linear_odom_sign': -1.0,
             'use_sim_time': LaunchConfiguration('use_sim_time'),
         }]
     )
@@ -327,4 +330,3 @@ def generate_launch_description():
         launch_items.append(relay_button_node)
 
     return LaunchDescription(launch_items)
-

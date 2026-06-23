@@ -8,22 +8,16 @@ from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from launch_ros.parameter_descriptions import ParameterValue
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-import os
+from ament_index_python.packages import get_package_share_directory, PackageNotFoundError
 
 def generate_launch_description():
     # Declare launch arguments
-    dev_arg = DeclareLaunchArgument(
-        'dev',
-        default_value='/dev/motor_controller',
-        description='Serial device path for motor controller'
+    joy_dev_arg = DeclareLaunchArgument(
+        'joy_dev',
+        default_value='/dev/input/js0',
+        description='Joystick device path'
     )
-    
-    baud_arg = DeclareLaunchArgument(
-        'baud',
-        default_value='115200',
-        description='Serial baud rate for motor controller'
-    )
-    
+
     relay_dev_arg = DeclareLaunchArgument(
         'relay_dev',
         default_value='/dev/ttyACM0',
@@ -40,90 +34,6 @@ def generate_launch_description():
         'relay_status_publish_rate',
         default_value='1.0',
         description='Relay status publishing rate (Hz)'
-    )
-    
-    wheel_base_arg = DeclareLaunchArgument(
-        'wheel_base',
-        default_value='0.57',
-        description='Distance between left and right wheels (meters)'
-    )
-    
-    wheel_radius_arg = DeclareLaunchArgument(
-        'wheel_radius',
-        default_value='0.12',
-        description='Wheel radius (meters)'
-    )
-    
-    motor_gear_ratio_arg = DeclareLaunchArgument(
-        'motor_gear_ratio',
-        default_value='90.0',
-        description='Motor internal gear ratio'
-    )
-    
-    belt_drive_ratio_arg = DeclareLaunchArgument(
-        'belt_drive_ratio',
-        default_value='6.4',
-        description='Belt drive ratio'
-    )
-    
-    apply_gear_reduction_arg = DeclareLaunchArgument(
-        'apply_gear_reduction',
-        default_value='true',
-        description='If true, divide encoder by gear ratio (encoder = motor counts). If false, encoder already in wheel rotations.'
-    )
-    
-    encoder_reduction_factor_arg = DeclareLaunchArgument(
-        'encoder_reduction_factor',
-        default_value='68.17',
-        description='Additional reduction factor to multiply the gear reduction.'
-    )
-    
-    loop_hz_arg = DeclareLaunchArgument(
-        'loop_hz',
-        default_value='20.0',
-        description='Update loop frequency (Hz)'
-    )
-    
-    max_motor_speed_arg = DeclareLaunchArgument(
-        'max_motor_speed',
-        default_value='1000.0',
-        description='Maximum motor speed'
-    )
-    
-    invert_left_encoder_arg = DeclareLaunchArgument(
-        'invert_left_encoder',
-        default_value='false',
-        description='Invert left encoder direction'
-    )
-    
-    invert_right_encoder_arg = DeclareLaunchArgument(
-        'invert_right_encoder',
-        default_value='true',
-        description='Invert right encoder direction'
-    )
-    
-    invert_left_motor_arg = DeclareLaunchArgument(
-        'invert_left_motor',
-        default_value='true',
-        description='Invert left motor direction'
-    )
-    
-    invert_right_motor_arg = DeclareLaunchArgument(
-        'invert_right_motor',
-        default_value='true',
-        description='Invert right motor direction'
-    )
-    
-    base_frame_arg = DeclareLaunchArgument(
-        'base_frame',
-        default_value='base_footprint',
-        description='Base frame ID'
-    )
-    
-    odom_frame_arg = DeclareLaunchArgument(
-        'odom_frame',
-        default_value='odom',
-        description='Odometry frame ID'
     )
     
     use_sim_time_arg = DeclareLaunchArgument(
@@ -180,7 +90,7 @@ def generate_launch_description():
     map_file_arg = DeclareLaunchArgument(
         'map',
         default_value='',
-        description='Full path to map yaml file to load'
+        description='Full path to the saved map yaml file to load'
     )
 
     # Get URDF file path
@@ -209,24 +119,13 @@ def generate_launch_description():
         name='generic_motor_driver',
         output='screen',
         parameters=[{
-            'dev': LaunchConfiguration('dev'),
-            'baud': LaunchConfiguration('baud'),
-            'wheel_base': LaunchConfiguration('wheel_base'),
-            'wheel_radius': LaunchConfiguration('wheel_radius'),
-            'motor_gear_ratio': LaunchConfiguration('motor_gear_ratio'),
-            'belt_drive_ratio': LaunchConfiguration('belt_drive_ratio'),
-            'apply_gear_reduction': LaunchConfiguration('apply_gear_reduction'),
-            'encoder_reduction_factor': LaunchConfiguration('encoder_reduction_factor'),
-            'loop_hz': LaunchConfiguration('loop_hz'),
-            'max_motor_speed': LaunchConfiguration('max_motor_speed'),
-            'invert_left_encoder': LaunchConfiguration('invert_left_encoder'),
-            'invert_right_encoder': LaunchConfiguration('invert_right_encoder'),
-            'invert_left_motor': LaunchConfiguration('invert_left_motor'),
-            'invert_right_motor': LaunchConfiguration('invert_right_motor'),
-            'base_frame': LaunchConfiguration('base_frame'),
-            'odom_frame': LaunchConfiguration('odom_frame'),
-            'publish_tf': True,
+            'base_frame': 'base_footprint',
+            'odom_frame': 'odom',
+            # Must match URDF joint names so robot_state_publisher can publish wheel TF.
             'joint_names': ['left_rear_wheel_joint', 'right_rear_wheel_joint'],
+            'swap_motors': True,
+            'linear_command_sign': -1.0,
+            'linear_odom_sign': -1.0,
             'use_sim_time': LaunchConfiguration('use_sim_time'),
         }]
     )
@@ -243,6 +142,75 @@ def generate_launch_description():
             'status_publish_rate': LaunchConfiguration('relay_status_publish_rate'),
         }]
     )
+
+    # Joystick teleop goes through twist_mux so manual control can override Nav2.
+    joy_node = Node(
+        package='joy',
+        executable='joy_node',
+        name='joy_node',
+        output='screen',
+        parameters=[{
+            'dev': LaunchConfiguration('joy_dev'),
+            'deadzone': 0.2,
+            'autorepeat_rate': 20.0,
+        }]
+    )
+
+    teleop_twist_joy_node = Node(
+        package='teleop_twist_joy',
+        executable='teleop_node',
+        name='teleop_twist_joy_node',
+        output='screen',
+        parameters=[
+            PathJoinSubstitution([
+                FindPackageShare('generic_motor_driver'),
+                'config',
+                'xbox_twist_mux.config.yaml',
+            ])
+        ],
+        remappings=[('/cmd_vel', '/cmd_vel_joy')],
+    )
+
+    twist_mux_node = Node(
+        package='twist_mux',
+        executable='twist_mux',
+        name='twist_mux',
+        output='screen',
+        parameters=[
+            PathJoinSubstitution([
+                FindPackageShare('twist_mux'),
+                'config',
+                'twist_mux_locks.yaml',
+            ]),
+            PathJoinSubstitution([
+                FindPackageShare('generic_motor_driver'),
+                'config',
+                'twist_mux_topics.yaml',
+            ]),
+            {'use_sim_time': LaunchConfiguration('use_sim_time')},
+        ],
+        remappings=[('/cmd_vel_out', '/cmd_vel')],
+    )
+
+    # Optional relay button mapping node (requires joy_teleop package).
+    relay_button_node = None
+    try:
+        get_package_share_directory('joy_teleop')
+        relay_button_node = Node(
+            package='joy_teleop',
+            executable='joy_teleop',
+            name='relay_button_teleop',
+            output='screen',
+            parameters=[
+                PathJoinSubstitution([
+                    FindPackageShare('generic_motor_driver'),
+                    'config',
+                    'xbox_relay_buttons.yaml'
+                ])
+            ]
+        )
+    except PackageNotFoundError:
+        relay_button_node = None
 
     # RPLidar node
     lidar_node = Node(
@@ -262,31 +230,38 @@ def generate_launch_description():
         ]
     )
 
-    # Map server (load saved map)
-    map_server_node = Node(
-        package='nav2_map_server',
-        executable='map_server',
-        name='map_server',
-        output='screen',
-        condition=IfCondition(LaunchConfiguration('map')),
-        parameters=[{
-            'use_sim_time': LaunchConfiguration('use_sim_time'),
-            'yaml_filename': LaunchConfiguration('map'),
-        }]
-    )
-
-    # Nav2 navigation stack
-    nav2_launch = IncludeLaunchDescription(
+    # Saved-map localization brings up map_server, AMCL, and their lifecycle manager.
+    nav2_localization_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
             PathJoinSubstitution([
                 FindPackageShare('nav2_bringup'),
                 'launch',
-                'navigation_launch.py'
+                'localization_launch.py'
             ])
         ]),
         launch_arguments={
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'params_file': LaunchConfiguration('nav2_params_file'),
+            'map': LaunchConfiguration('map'),
+            'autostart': 'True',
+            'use_composition': 'False',
+        }.items()
+    )
+
+    # Nav2 navigation servers with command topics remapped for twist_mux.
+    nav2_navigation_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource([
+            PathJoinSubstitution([
+                FindPackageShare('generic_motor_driver'),
+                'launch',
+                'navigation_launch_mux.launch.py'
+            ])
+        ]),
+        launch_arguments={
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
+            'params_file': LaunchConfiguration('nav2_params_file'),
+            'autostart': 'True',
+            'use_composition': 'False',
         }.items()
     )
 
@@ -296,30 +271,16 @@ def generate_launch_description():
         executable='rviz2',
         name='rviz2',
         output='screen',
-        arguments=['-d', LaunchConfiguration('rviz_config')]
+        arguments=['-d', LaunchConfiguration('rviz_config')],
+        condition=IfCondition(LaunchConfiguration('rviz')),
     )
 
     return LaunchDescription([
         # Launch arguments
-        dev_arg,
-        baud_arg,
+        joy_dev_arg,
         relay_dev_arg,
         relay_baud_arg,
         relay_status_rate_arg,
-        wheel_base_arg,
-        wheel_radius_arg,
-        motor_gear_ratio_arg,
-        belt_drive_ratio_arg,
-        apply_gear_reduction_arg,
-        encoder_reduction_factor_arg,
-        loop_hz_arg,
-        max_motor_speed_arg,
-        invert_left_encoder_arg,
-        invert_right_encoder_arg,
-        invert_left_motor_arg,
-        invert_right_motor_arg,
-        base_frame_arg,
-        odom_frame_arg,
         use_sim_time_arg,
         rviz_arg,
         rviz_config_arg,
@@ -333,9 +294,11 @@ def generate_launch_description():
         robot_state_publisher_node,
         motor_driver_node,
         relay_controller_node,
+        joy_node,
+        teleop_twist_joy_node,
+        twist_mux_node,
         lidar_node,
-        map_server_node,
-        nav2_launch,
+        nav2_localization_launch,
+        nav2_navigation_launch,
         rviz_node,
-    ])
-
+    ] + ([relay_button_node] if relay_button_node is not None else []))

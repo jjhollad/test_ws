@@ -126,6 +126,9 @@ private:
   bool invert_right_encoder_;  // Invert right encoder direction
   bool invert_left_motor_;  // Invert left motor direction (for backwards motors)
   bool invert_right_motor_;  // Invert right motor direction (for backwards motors)
+  bool swap_motors_;  // Treat motor controller M1 as right and M2 as left
+  double linear_command_sign_;  // +1 normal, -1 flips forward/backward commands before mixing
+  double linear_odom_sign_;  // +1 normal, -1 flips forward/backward odometry only
   /// First-order low-pass on cmd_vel (1.0 = off). Reduces joystick noise / deadzone dither.
   double cmd_vel_filter_alpha_;
   double filtered_cmd_lin_x_;

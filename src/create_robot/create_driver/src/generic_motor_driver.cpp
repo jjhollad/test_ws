@@ -55,13 +55,13 @@ GenericMotorDriver::GenericMotorDriver()
   last_left_encoder_(0.0), last_right_encoder_(0.0),
   last_odom_time_(),  // Will be set to now() in constructor body to ensure correct clock type
   encoders_initialized_(false),
+  tf_broadcaster_(this),
+  diagnostics_(this),
   last_cmd_vel_time_(),  // Will be set to now() in constructor body to ensure correct clock type
-  latch_duration_(std::chrono::nanoseconds{0}),
-  is_running_slowly_(false),
   cached_left_motor_speed_(0.0),
   cached_right_motor_speed_(0.0),
-  tf_broadcaster_(this),
-  diagnostics_(this)
+  latch_duration_(std::chrono::nanoseconds{0}),
+  is_running_slowly_(false)
 {
   // Get parameters
   dev_ = declare_parameter<std::string>("dev", "/dev/motor_controller");
@@ -80,6 +80,11 @@ GenericMotorDriver::GenericMotorDriver()
   invert_right_encoder_ = declare_parameter<bool>("invert_right_encoder", true);
   invert_left_motor_ = declare_parameter<bool>("invert_left_motor", false);
   invert_right_motor_ = declare_parameter<bool>("invert_right_motor", true);
+  swap_motors_ = declare_parameter<bool>("swap_motors", false);
+  linear_command_sign_ = declare_parameter<double>("linear_command_sign", 1.0);
+  linear_command_sign_ = (linear_command_sign_ >= 0.0) ? 1.0 : -1.0;
+  linear_odom_sign_ = declare_parameter<double>("linear_odom_sign", 1.0);
+  linear_odom_sign_ = (linear_odom_sign_ >= 0.0) ? 1.0 : -1.0;
   cmd_vel_filter_alpha_ = declare_parameter<double>("cmd_vel_filter_alpha", 1.0);
   if (cmd_vel_filter_alpha_ < 0.0) {
     cmd_vel_filter_alpha_ = 0.0;
@@ -124,6 +129,10 @@ GenericMotorDriver::GenericMotorDriver()
                      << ", right=" << (invert_right_encoder_ ? "true" : "false"));
   RCLCPP_INFO_STREAM(get_logger(), "[MOTOR] Motor inversion: left=" << (invert_left_motor_ ? "true" : "false") 
                      << ", right=" << (invert_right_motor_ ? "true" : "false"));
+  RCLCPP_INFO_STREAM(get_logger(), "[MOTOR] Motor channel swap: "
+                     << (swap_motors_ ? "M1=right, M2=left" : "M1=left, M2=right"));
+  RCLCPP_INFO_STREAM(get_logger(), "[MOTOR] Linear command sign: " << linear_command_sign_);
+  RCLCPP_INFO_STREAM(get_logger(), "[MOTOR] Linear odom sign: " << linear_odom_sign_);
   if (cmd_vel_filter_alpha_ < 1.0) {
     RCLCPP_INFO_STREAM(get_logger(), "[MOTOR] cmd_vel low-pass alpha=" << cmd_vel_filter_alpha_
                        << " (1.0=disabled)");
@@ -464,9 +473,9 @@ void GenericMotorDriver::updateOdometry()
     return;
   }
   
-  // Use motors 1 and 2 as left and right wheels for differential drive
-  double left_encoder = motor_data_.total_encoder[0];
-  double right_encoder = motor_data_.total_encoder[1];
+  // Map raw controller channels into logical left/right wheels.
+  double left_encoder = swap_motors_ ? motor_data_.total_encoder[1] : motor_data_.total_encoder[0];
+  double right_encoder = swap_motors_ ? motor_data_.total_encoder[0] : motor_data_.total_encoder[1];
   
   // Apply encoder inversion if needed (to fix spinning in circles when driving straight)
   if (invert_left_encoder_) {
@@ -481,10 +490,11 @@ void GenericMotorDriver::updateOdometry()
     last_left_encoder_ = left_encoder;
     last_right_encoder_ = right_encoder;
     encoders_initialized_ = true;
-    RCLCPP_INFO(get_logger(), "[MOTOR] Initialized encoders: L=%.1f, R=%.1f (inverted: L=%s, R=%s)", 
+    RCLCPP_INFO(get_logger(), "[MOTOR] Initialized logical encoders: L=%.1f, R=%.1f (inverted: L=%s, R=%s, swap=%s)",
                  left_encoder, right_encoder,
                  invert_left_encoder_ ? "yes" : "no",
-                 invert_right_encoder_ ? "yes" : "no");
+                 invert_right_encoder_ ? "yes" : "no",
+                 swap_motors_ ? "yes" : "no");
     last_odom_time_ = this->now();
     return;  // Skip first update to avoid large jump
   }
@@ -511,7 +521,7 @@ void GenericMotorDriver::updateOdometry()
     double left_distance = left_wheel_rotations * (2.0 * M_PI * wheel_radius_);
     double right_distance = right_wheel_rotations * (2.0 * M_PI * wheel_radius_);
     
-    double delta_distance = (left_distance + right_distance) / 2.0;
+    double delta_distance = linear_odom_sign_ * (left_distance + right_distance) / 2.0;
     // Angular velocity: positive = counter-clockwise (left wheel forward, right wheel backward)
     // Formula: (left - right) / wheel_base gives positive for counter-clockwise
     double delta_theta = (left_distance - right_distance) / wheel_base_;
@@ -537,7 +547,7 @@ void GenericMotorDriver::cmdVelCallback(geometry_msgs::msg::Twist::UniquePtr msg
 {
   // Convert twist to motor speeds
   // Assuming motors 1 and 2 are left and right wheels
-  double linear = msg->linear.x;
+  double linear = linear_command_sign_ * msg->linear.x;
   double angular = msg->angular.z;
 
   if (cmd_vel_filter_alpha_ < 1.0) {
@@ -595,16 +605,17 @@ void GenericMotorDriver::cmdVelCallback(geometry_msgs::msg::Twist::UniquePtr msg
       base_right_speed = -base_right_speed;
     }
     
-    cached_left_motor_speed_ = base_left_speed;
-    cached_right_motor_speed_ = base_right_speed;
+    cached_left_motor_speed_ = swap_motors_ ? base_right_speed : base_left_speed;
+    cached_right_motor_speed_ = swap_motors_ ? base_left_speed : base_right_speed;
     
     // Debug: Log inversion status on first cmd_vel
     static bool logged_inversion = false;
     if (!logged_inversion) {
-      RCLCPP_INFO(get_logger(), "[MOTOR] Motor inversion settings: left=%s, right=%s",
+      RCLCPP_INFO(get_logger(), "[MOTOR] Motor inversion settings: left=%s, right=%s, swap_motors=%s",
                    invert_left_motor_ ? "INVERTED" : "normal",
-                   invert_right_motor_ ? "INVERTED" : "normal");
-      RCLCPP_INFO(get_logger(), "[MOTOR] Example: forward cmd -> left=%.1f, right=%.1f (before inversion: left=%.1f, right=%.1f)",
+                   invert_right_motor_ ? "INVERTED" : "normal",
+                   swap_motors_ ? "true" : "false");
+      RCLCPP_INFO(get_logger(), "[MOTOR] Example: forward cmd -> M1=%.1f, M2=%.1f (logical before inversion: left=%.1f, right=%.1f)",
                    cached_left_motor_speed_, cached_right_motor_speed_,
                    left_motor_speed, right_motor_speed);
       logged_inversion = true;
@@ -645,8 +656,8 @@ void GenericMotorDriver::publishOdom()
   {
     std::lock_guard<std::mutex> lock(motor_data_mutex_);
 
-    double left_encoder = motor_data_.total_encoder[0];
-    double right_encoder = motor_data_.total_encoder[1];
+    double left_encoder = swap_motors_ ? motor_data_.total_encoder[1] : motor_data_.total_encoder[0];
+    double right_encoder = swap_motors_ ? motor_data_.total_encoder[0] : motor_data_.total_encoder[1];
     if (invert_left_encoder_) {
       left_encoder = -left_encoder;
     }
@@ -670,7 +681,7 @@ void GenericMotorDriver::publishOdom()
         double left_vel = left_distance / dt;
         double right_vel = right_distance / dt;
 
-        linear_vel = (left_vel + right_vel) / 2.0;
+        linear_vel = linear_odom_sign_ * (left_vel + right_vel) / 2.0;
         angular_vel = (left_vel - right_vel) / wheel_base_;
 
         last_vel_left_encoder = left_encoder;
@@ -715,9 +726,10 @@ void GenericMotorDriver::publishJointState()
   
   joint_state_msg_.header.stamp = this->now();
   for (int i = 0; i < 2; i++) {
-    // Get encoder values and apply inversion if needed
-    double total_enc = motor_data_.total_encoder[i];
-    double realtime_enc = motor_data_.realtime_encoder[i];
+    // Publish joint states in logical left/right order, independent of raw M1/M2 wiring.
+    const int raw_index = swap_motors_ ? 1 - i : i;
+    double total_enc = motor_data_.total_encoder[raw_index];
+    double realtime_enc = motor_data_.realtime_encoder[raw_index];
     if (i == 0 && invert_left_encoder_) {
       total_enc = -total_enc;
       realtime_enc = -realtime_enc;
@@ -807,22 +819,22 @@ bool GenericMotorDriver::update()
   
   // Send motor speeds at update loop rate (prevents serial port congestion)
   // If last velocity command was sent longer than latch duration, stop robot
-  double left_speed = 0.0;
-  double right_speed = 0.0;
+  double m1_speed = 0.0;
+  double m2_speed = 0.0;
   
   if (last_cmd_vel_time_.nanoseconds() != 0) {
     rclcpp::Duration time_since_cmd = current_time - last_cmd_vel_time_;
     if (time_since_cmd < latch_duration_) {
       // Get cached motor speeds (updated by cmd_vel callback)
       std::lock_guard<std::mutex> lock(cmd_vel_mutex_);
-      left_speed = cached_left_motor_speed_;
-      right_speed = cached_right_motor_speed_;
+      m1_speed = cached_left_motor_speed_;
+      m2_speed = cached_right_motor_speed_;
     }
     // No logging for expired commands - reduces overhead
   }
   
   // Send motor speeds at update loop rate
-  sendMotorSpeeds(left_speed, right_speed, 0.0, 0.0);
+  sendMotorSpeeds(m1_speed, m2_speed, 0.0, 0.0);
   
   return true;
 }

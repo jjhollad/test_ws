@@ -63,7 +63,10 @@ def generate_launch_description():
         parameters=[{
             'base_frame': 'base_footprint',
             'odom_frame': 'odom',
-            'joint_names': ['right_rear_wheel_joint', 'left_rear_wheel_joint'],  # M1/M2 mapping is physically swapped
+            'joint_names': ['left_rear_wheel_joint', 'right_rear_wheel_joint'],
+            'swap_motors': True,
+            'linear_command_sign': -1.0,
+            'linear_odom_sign': -1.0,
             'use_sim_time': LaunchConfiguration('use_sim_time'),
         }]
     )

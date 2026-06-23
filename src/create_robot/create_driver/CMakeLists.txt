@@ -51,12 +51,14 @@ install(TARGETS ${PROJECT_NAME} relay_controller
 
 # Install Python scripts
 install(PROGRAMS
+  scripts/coverage_cleaner.py
   scripts/kill_robot_stack.sh
   scripts/rotate_wheel_one_turn.py
   scripts/test_left_wheel_cmdvel.py
   scripts/drive_one_meter.py
   scripts/rotate_one_revolution.py
   scripts/monitor_cmd_vel.py
+  scripts/monitor_nav_cmd_path.py
   scripts/analyze_cmd_vel_and_drift.py
   scripts/monitor_motor_speeds.py
   scripts/monitor_odom.py
@@ -92,6 +94,15 @@ install(DIRECTORY rviz/
 install(DIRECTORY config/
   DESTINATION share/${PROJECT_NAME}/config
   FILES_MATCHING PATTERN "*.yaml"
+)
+
+# Install saved maps used by navigation/cleaning bringups.
+install(DIRECTORY maps/
+  DESTINATION share/${PROJECT_NAME}/maps
+  FILES_MATCHING
+    PATTERN "*.yaml"
+    PATTERN "*.pgm"
+    PATTERN "*.png"
 )
 
 # Install custom simulation worlds
