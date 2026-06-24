@@ -12,6 +12,7 @@ This repository is a backup of all ROS 2 workspaces and maps on this machine.
 | `workspaces/sweepbot_ws/` | `~/sweepbot_ws` | Sweepbot project |
 | `workspaces/launch_ws/` | `~/launch_ws` | Launch/scripts workspace |
 | `workspaces/jackal_navigation/` | `~/jackal_navigation` | Jackal navigation snippets |
+| `arduino/` | `~/Arduino` | Sketches and custom libraries (not `.arduino15` toolchain) |
 | `backup_maps/` | `~/maps`, `~/EERC_SB*`, workspace maps | SLAM / navigation maps |
 
 `build/`, `install/`, `log/`, and nested `.git/` directories are excluded (regenerate with `colcon build`).

@@ -22,6 +22,11 @@ for ws in create_ws create3_examples_ws sweepbot_ws launch_ws jackal_navigation;
   fi
 done
 
+if [[ -d "$HOME_DIR/Arduino" ]]; then
+  echo "Syncing Arduino ..."
+  rsync -a --delete "$HOME_DIR/Arduino/" "$REPO_ROOT/arduino/"
+fi
+
 if [[ -d "$HOME_DIR/maps" ]]; then
   echo "Syncing maps ..."
   rsync -a --delete "$HOME_DIR/maps/" "$REPO_ROOT/backup_maps/EERCsB/"
