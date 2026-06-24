@@ -1,0 +1,7 @@
+image: EERC_SB_LOOP_rot10cw.pgm
+mode: trinary
+resolution: 0.05
+origin: [-16.800000, -23.800000, 0]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.25

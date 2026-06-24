@@ -1,0 +1,13 @@
+amcl:
+  ros__parameters:
+    use_sim_time: false
+    min_particles: 500
+    max_particles: 5000
+    update_min_d: 0.1
+    update_min_a: 0.05
+    resample_interval: 2
+    base_frame_id: "base_footprint"
+    global_frame_id: "map"
+    motion_model_type: "DifferentialMotionModel"
+    kld_err: "0.05"
+    kld_z: "0.99"

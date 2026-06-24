@@ -1,0 +1,26 @@
+
+to download from github 
+sudo apt install gh 
+gh auth login
+git clone https://github.com/jjhollad/sweepbot_ws.git
+after dowloading from github:
+colcon build
+# Build needed before sourcing to create the install folder. 
+source ~/sweepbot_ws/install/setup.bash
+echo "source ~/sweepbot_ws/install/setup.bash" >> ~/.bashrc
+then run: ros2 launch sweepbot sweepStartup_launch.py
+To get the comander going: cd ~/sweeobtow_ws/src/sweepbot/sweepbot
+Then run: python3 demo_sweep.py
+Want teleop?:ros2 run teleop_twist_keyboard teleop_twist_keyboard
+	Controller:ros2 launch my_teleop_config teleop.launch.py
+	Check working status: ros2 topic echo /joy
+kill command: "pkill -9 -f "ros2|gazebo|gz|nav2|amcl|bt_navigator|nav_to_pose|rviz2|python3|assisted_teleop|cmd_vel_relay|robot_state_publisher|joint_state_publisher|move_to_free|mqtt|autodock|cliff_detection|moveit|move_group|basic_navigator""
+To get points run: ros2 topic echo /clicked_point
+then use the published points on rviz and click points to see them.
+To git Pull run: git pull origin master
+To run Killros.sh: ~/sweepbot_ws/killros.sh
+Want to push to the github: git add . 
+                            git commit -m "helpful message"
+                            git push
+Make map?: ros2 run nav2_map_saver map_saver_cli -f ~/sweepbot_ws/map/put your map name here
+Didnt work? run it again (trust me)

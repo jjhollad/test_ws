@@ -1,0 +1,3 @@
+KERNEL=="ttyUSB*", ATTRS{manufacturer}=="FTDI", SYMLINK+="irobot"
+KERNEL=="ttyUSB*", ATTRS{manufacturer}=="Silicon Labs", SYMLINK+="mylidar"
+
