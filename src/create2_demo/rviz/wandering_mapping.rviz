@@ -19,6 +19,8 @@ Panels:
     Name: Views
   - Class: nav2_rviz_plugins/Navigation 2
     Name: Navigation 2
+  - Class: rviz_common/Time
+    Name: Simulation Clock
 Visualization Manager:
   Class: ""
   Displays:

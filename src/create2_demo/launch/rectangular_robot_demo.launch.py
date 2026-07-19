@@ -150,6 +150,16 @@ def generate_launch_description():
     wall_evaluation = LaunchConfiguration("wall_evaluation")
     wall_cooldown = LaunchConfiguration("wall_cooldown")
     start_wall_follower = LaunchConfiguration("start_wall_follower")
+    simulation_world = ReplaceString(
+        source_file=LaunchConfiguration("world"),
+        replacements={
+            "<real_time_update_rate>1000</real_time_update_rate>": [
+                "<real_time_update_rate>",
+                LaunchConfiguration("sim_real_time_update_rate"),
+                "</real_time_update_rate>",
+            ],
+        },
+    )
 
     spawn_robot = Node(
         package="gazebo_ros",
@@ -194,6 +204,7 @@ def generate_launch_description():
         DeclareLaunchArgument("wall_evaluation", default_value="25.0"),
         DeclareLaunchArgument("wall_cooldown", default_value="300.0"),
         DeclareLaunchArgument("start_wall_follower", default_value="true"),
+        DeclareLaunchArgument("sim_real_time_update_rate", default_value="1000"),
         DeclareLaunchArgument("slam_map_update_interval", default_value="0.5"),
         DeclareLaunchArgument("slam_resolution", default_value="0.05"),
         DeclareLaunchArgument("slam_minimum_travel_distance", default_value="0.15"),
@@ -207,7 +218,7 @@ def generate_launch_description():
             PythonLaunchDescriptionSource(
                 os.path.join(gazebo_share, "launch", "gzserver.launch.py")
             ),
-            launch_arguments={"world": LaunchConfiguration("world")}.items(),
+            launch_arguments={"world": simulation_world}.items(),
         ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(

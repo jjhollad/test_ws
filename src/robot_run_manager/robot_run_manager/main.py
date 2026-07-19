@@ -404,6 +404,11 @@ TUNING_VARIABLES = {
         'Loop search distance', 'SLAM mapping', 1.0, 12.0, 4.0, 1,
         'Radius searched for loop closures; larger corrects longer loops at greater cost.'
     ),
+    'simulation_speed': (
+        'Simulation speed multiplier', 'Simulation clock', 0.1, 3.0, 1.0, 1,
+        'Target Gazebo clock rate relative to real time. Faster values require '
+        'more CPU and may run below target when the computer cannot keep up.'
+    ),
 }
 
 
@@ -712,6 +717,11 @@ class RunManagerWindow(QMainWindow):
             'slam_loop_search_distance',
         )
         return [f'{key}:={self._configuration_value(key)}' for key in keys]
+
+    def _simulation_launch_arguments(self):
+        multiplier = self._configuration_value('simulation_speed')
+        update_rate = round(1000.0 * multiplier)
+        return [f'sim_real_time_update_rate:={update_rate}']
 
     def _role_changed(self):
         self.preflight_passed = False
@@ -1241,6 +1251,7 @@ class RunManagerWindow(QMainWindow):
                 'use_rviz:=True',
                 'start_wall_follower:=false',
                 *self._slam_launch_arguments(),
+                *self._simulation_launch_arguments(),
             ],
         )
         QTimer.singleShot(3000, self.open_gazebo)

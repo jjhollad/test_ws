@@ -56,6 +56,8 @@ robot when replaying.
   unproductive route when it fails to add 1.0 m² of free map in time;
 - **SLAM mapping** sliders tune map refresh/resolution, scan travel and heading
   thresholds, scan-buffer size/range, local link matching, and loop search;
+- **Simulation speed multiplier** targets 0.1×–3.0× Gazebo time, while RViz's
+  **Simulation Clock** panel shows the `/clock`-driven ROS time;
 - one-click wall-mapping bringup starts the corridor world, RViz, SLAM, Nav2,
   chassis-aware LiDAR filtering, the global planner, and wall following;
 - timestamped rosbag runs with JSON metadata and CSV event markers;
