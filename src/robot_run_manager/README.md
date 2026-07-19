@@ -41,9 +41,10 @@ robot when replaying.
 - unavoidable mapped-area transit switches A* to a configurable safe wall
   offset, suspends revisit penalties, and permits a longer 25 m route horizon
   while traveling out to the next frontier;
-- persistent **Configuration** tab with described sliders for wall geometry,
-  wall speed, Nav2 lead-in, LiDAR fitting, and global-planner reward/penalty
-  weights; values apply to the next behavior start;
+- persistent **Configuration** tab with described sliders for every planner
+  variable used by this application: wall geometry, route construction,
+  frontier scoring, corridor inference, novelty, replanning, and recovery;
+  values apply to the next behavior start;
 - guarded rolling Nav2 route extension, adjustable with **Path extension
   interval**, adds farther frontier poses near the route tail without rapid
   mid-route preemption;

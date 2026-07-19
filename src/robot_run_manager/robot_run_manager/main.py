@@ -250,6 +250,118 @@ TUNING_VARIABLES = {
         'Seconds Nav2 may follow a route without adding at least 1.0 m² of '
         'new free map before switching to a more productive frontier.'
     ),
+    'robot_clearance': (
+        'Robot route clearance', 'Path geometry', 0.30, 1.20, 0.58, 2,
+        'Minimum obstacle clearance required for every traversable route cell.'
+    ),
+    'goal_clearance': (
+        'Frontier goal clearance', 'Path geometry', 0.30, 1.50, 0.62, 2,
+        'Minimum obstacle clearance required at a selected frontier goal.'
+    ),
+    'waypoint_spacing': (
+        'Waypoint spacing', 'Path geometry', 0.20, 2.00, 0.75, 2,
+        'Distance between poses sent to NavigateThroughPoses; smaller is denser.'
+    ),
+    'minimum_frontier_size': (
+        'Minimum frontier size', 'Frontier selection', 0.10, 3.00, 0.50, 2,
+        'Reject frontier groups shorter than this approximate map distance.'
+    ),
+    'minimum_goal_distance': (
+        'Preferred goal distance', 'Frontier selection', 0.50, 6.00, 1.80, 2,
+        'Preferred minimum distance to a frontier goal before fallback is used.'
+    ),
+    'minimum_route_length': (
+        'Preferred route length', 'Path geometry', 0.50, 8.00, 2.00, 2,
+        'Preferred minimum usable A* route length.'
+    ),
+    'fallback_goal_distance': (
+        'Fallback goal distance', 'Frontier selection', 0.20, 3.00, 0.80, 2,
+        'Shorter goal-distance requirement used when the map is still small.'
+    ),
+    'fallback_route_length': (
+        'Fallback route length', 'Path geometry', 0.10, 2.00, 0.35, 2,
+        'Shortest route accepted when no preferred-length route is available.'
+    ),
+    'route_horizon': (
+        'Normal route horizon', 'Path geometry', 2.0, 30.0, 10.0, 1,
+        'Maximum normal route length sent to Nav2 before rolling extension.'
+    ),
+    'planning_period': (
+        'Planner evaluation period', 'Replanning and recovery',
+        0.20, 5.00, 0.50, 2,
+        'Seconds between frontier evaluations while the planner is available.'
+    ),
+    'maximum_route_poses': (
+        'Maximum route poses', 'Path geometry', 5, 100, 40, 0,
+        'Maximum number of poses retained in one NavigateThroughPoses goal.'
+    ),
+    'wall_heading_radius': (
+        'Wall heading-fit radius', 'Path geometry', 0.30, 4.00, 1.50, 2,
+        'Map radius used to fit nearby walls when orienting route poses.'
+    ),
+    'rolling_replan_poses': (
+        'Route-tail pose trigger', 'Replanning and recovery', 0, 12, 4, 0,
+        'Begin route extension when this many poses remain; zero disables it.'
+    ),
+    'rolling_replan_distance': (
+        'Route-tail distance trigger', 'Replanning and recovery',
+        0.5, 10.0, 4.0, 1,
+        'Route extension also requires being within this distance of the tail.'
+    ),
+    'visit_record_spacing': (
+        'Travel-history spacing', 'Novelty and mapped transit',
+        0.05, 1.00, 0.25, 2,
+        'Distance moved before another visited-location sample is recorded.'
+    ),
+    'unavoidable_transit_threshold': (
+        'Unavoidable revisit threshold', 'Novelty and mapped transit',
+        0.2, 5.0, 1.0, 1,
+        'Minimum shared revisit distance that activates penalty-free wall transit.'
+    ),
+    'continuity_weight': (
+        'Goal continuity weight', 'Frontier selection', 0.0, 5.0, 0.8, 1,
+        'Discourages large jumps away from the current frontier target.'
+    ),
+    'frontier_lateral_penalty': (
+        'Frontier lateral penalty', 'Frontier selection', 0.0, 5.0, 0.4, 1,
+        'Penalizes frontier cells far to the side of the current heading.'
+    ),
+    'corridor_lookahead': (
+        'Map corridor lookahead', 'Corridor planning', 1.0, 15.0, 6.0, 1,
+        'Forward distance searched for a mapped corridor-center goal.'
+    ),
+    'corridor_half_width': (
+        'Corridor search half-width', 'Corridor planning', 1.0, 10.0, 4.0, 1,
+        'Lateral half-width of the mapped corridor search region.'
+    ),
+    'minimum_corridor_width': (
+        'Minimum corridor width', 'Corridor planning', 0.8, 5.0, 1.2, 1,
+        'Reject inferred corridors narrower than this safe width.'
+    ),
+    'significant_progress': (
+        'Progress segment distance', 'Replanning and recovery',
+        0.05, 1.00, 0.25, 2,
+        'Distance Nav2 must advance to reset the segment completion timer.'
+    ),
+    'minimum_discovery_area_gain': (
+        'Minimum discovery gain', 'Replanning and recovery',
+        0.1, 10.0, 1.0, 1,
+        'Square metres of new free map required to reset the discovery timer.'
+    ),
+    'stuck_radius': (
+        'Stuck-region radius', 'Replanning and recovery', 0.5, 5.0, 2.0, 1,
+        'Radius used to decide whether the robot remained in one physical region.'
+    ),
+    'stuck_timeout': (
+        'Physical stuck timeout', 'Replanning and recovery',
+        15.0, 300.0, 120.0, 1,
+        'Time inside the stuck-region radius before backup recovery is allowed.'
+    ),
+    'recovery_backup_distance': (
+        'Recovery backup distance', 'Replanning and recovery',
+        0.2, 4.0, 2.14, 2,
+        'Collision-checked Nav2 backup distance after a confirmed physical stall.'
+    ),
 }
 
 
@@ -521,13 +633,24 @@ class RunManagerWindow(QMainWindow):
 
     def _planner_launch_arguments(self):
         keys = (
+            'robot_clearance', 'goal_clearance', 'waypoint_spacing',
+            'minimum_frontier_size', 'minimum_goal_distance',
+            'minimum_route_length', 'fallback_goal_distance',
+            'fallback_route_length', 'route_horizon', 'planning_period',
+            'maximum_route_poses', 'wall_heading_radius',
+            'rolling_replan_poses', 'rolling_replan_distance',
             'information_weight', 'frontier_bonus', 'revisit_weight',
-            'visited_radius', 'travel_weight', 'forward_weight',
-            'reverse_penalty', 'clearance_weight',
+            'visited_radius', 'visit_record_spacing',
+            'unavoidable_transit_threshold', 'travel_weight',
+            'continuity_weight', 'forward_weight', 'reverse_penalty',
+            'frontier_lateral_penalty', 'clearance_weight',
+            'corridor_lookahead', 'corridor_half_width',
+            'minimum_corridor_width',
             'route_extension_period',
             'wall_transit_weight', 'unavoidable_route_horizon',
-            'progress_timeout',
-            'discovery_progress_timeout',
+            'progress_timeout', 'significant_progress',
+            'discovery_progress_timeout', 'minimum_discovery_area_gain',
+            'stuck_radius', 'stuck_timeout', 'recovery_backup_distance',
         )
         arguments = [
             f'{key}:={self._configuration_value(key)}' for key in keys
