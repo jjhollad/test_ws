@@ -190,6 +190,12 @@ TUNING_VARIABLES = {
         'Minimum continuous LiDAR-fitted wall length required before wall '
         'following may take control from the global planner.'
     ),
+    'global_planning_cooldown': (
+        'Behavior handoff timeout', 'Behavior coordination',
+        5.0, 600.0, 300.0, 1,
+        'Seconds the global planner keeps control after wall following yields '
+        'before the wall behavior may attempt its next qualified takeover.'
+    ),
     'information_weight': (
         'Unknown-space reward', 'Global frontier planner', 0.0, 10.0, 4.0, 1,
         'Reward per square metre of unknown space visible at a frontier.'
@@ -1154,7 +1160,8 @@ class RunManagerWindow(QMainWindow):
                 '-p', 'minimum_handoff_wall_length:='
                 f'{self._configuration_value("minimum_handoff_wall_length")}',
                 '-p', 'exploration_evaluation_period:=25.0',
-                '-p', 'global_planning_cooldown:=300.0',
+                '-p', 'global_planning_cooldown:='
+                f'{self._configuration_value("global_planning_cooldown")}',
             ],
         )
 

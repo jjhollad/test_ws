@@ -32,6 +32,8 @@ robot when replaying.
   follows collinear 0.5 m waypoints for 3 m before direct tracing takes over;
 - strict wall-control handoff after every global-planning interval: the fitted
   wall must exceed 5 m and the robot must be parallel and at the target offset;
+- configurable **Behavior handoff timeout** sets how long the global planner
+  retains control before wall acquisition may attempt another takeover;
 - automatic mission completion after sustained frontier exhaustion: wall
   following stops, Nav2 returns to the recorded start pose, and mapping ends;
 - novelty-biased global planning that rewards reachable unknown-space gain and
