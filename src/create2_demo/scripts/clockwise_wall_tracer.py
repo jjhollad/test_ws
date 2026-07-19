@@ -6,7 +6,10 @@ import math
 import cv2
 import numpy as np
 import rclpy
+from nav2_msgs.action import NavigateToPose
+from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
+from rclpy.time import Time
 from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import OccupancyGrid, Odometry, Path
 from rclpy.node import Node
@@ -14,6 +17,7 @@ from rclpy.duration import Duration
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Bool
+from tf2_ros import Buffer, TransformException, TransformListener
 
 
 class ClockwiseWallTracer(Node):
@@ -41,6 +45,8 @@ class ClockwiseWallTracer(Node):
             "global_planning_cooldown": 45.0,
             "trace_path_spacing": 0.10,
             "trace_path_maximum_poses": 20000,
+            "align_with_nav2": True,
+            "alignment_settle_time": 0.75,
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value)
@@ -58,11 +64,18 @@ class ClockwiseWallTracer(Node):
         self._last_wall_time = None
         self._state = "search"
         self._returning_home = False
+        self._alignment_complete = False
+        self._alignment_pending = False
+        self._alignment_claimed_at = None
+        self._alignment_goal_handle = None
         self._backup_start = None
         self._trace_path = Path()
         self._trace_path.header.frame_id = "odom"
         self._cmd = self.create_publisher(Twist, "/cmd_vel_nav", 10)
         self._active = self.create_publisher(Bool, "/wall_tracing_active", 10)
+        self._navigation = ActionClient(self, NavigateToPose, "navigate_to_pose")
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(self._tf_buffer, self)
         self._trace_path_pub = self.create_publisher(
             Path, "/robot_global_trace", 10
         )
@@ -79,6 +92,8 @@ class ClockwiseWallTracer(Node):
     def _return_home_callback(self, message):
         self._returning_home = message.data
         if self._returning_home:
+            if self._alignment_goal_handle is not None:
+                self._alignment_goal_handle.cancel_goal_async()
             self._set_state("yield_for_return_home")
             self._cmd.publish(Twist())
             self._active.publish(Bool(data=False))
@@ -184,6 +199,97 @@ class ClockwiseWallTracer(Node):
         distance = abs(float(vx) * float(py) - float(vy) * float(px))
         return distance, yaw
 
+    @staticmethod
+    def _yaw_from_quaternion(rotation):
+        return math.atan2(
+            2.0 * (rotation.w * rotation.z + rotation.x * rotation.y),
+            1.0 - 2.0 * (rotation.y ** 2 + rotation.z ** 2),
+        )
+
+    def _start_wall_alignment(self, wall, now):
+        """Ask Nav2 to establish the wall distance and parallel heading."""
+        if not self._navigation.server_is_ready():
+            self.get_logger().info(
+                "Waiting for Nav2 before wall alignment.",
+                throttle_duration_sec=2.0,
+            )
+            return
+        try:
+            transform = self._tf_buffer.lookup_transform(
+                "map", "base_footprint", Time()
+            )
+        except TransformException as error:
+            self.get_logger().info(
+                f"Waiting for map-to-robot transform: {error}",
+                throttle_duration_sec=2.0,
+            )
+            return
+        distance, relative_wall_yaw = wall
+        robot_yaw = self._yaw_from_quaternion(transform.transform.rotation)
+        # The fitted wall direction points forward. Its left normal points
+        # from a right-side wall toward the robot. Move along that normal until
+        # the robot center is exactly target_wall_distance from the wall.
+        normal_x = -math.sin(relative_wall_yaw)
+        normal_y = math.cos(relative_wall_yaw)
+        correction = float(
+            self.get_parameter("target_wall_distance").value
+        ) - distance
+        local_x = normal_x * correction
+        local_y = normal_y * correction
+        goal = PoseStamped()
+        goal.header.frame_id = "map"
+        goal.header.stamp = now.to_msg()
+        goal.pose.position.x = (
+            transform.transform.translation.x
+            + math.cos(robot_yaw) * local_x
+            - math.sin(robot_yaw) * local_y
+        )
+        goal.pose.position.y = (
+            transform.transform.translation.y
+            + math.sin(robot_yaw) * local_x
+            + math.cos(robot_yaw) * local_y
+        )
+        goal_yaw = robot_yaw + relative_wall_yaw
+        goal.pose.orientation.z = math.sin(goal_yaw / 2.0)
+        goal.pose.orientation.w = math.cos(goal_yaw / 2.0)
+        request = NavigateToPose.Goal()
+        request.pose = goal
+        self._alignment_pending = True
+        self._set_state("nav2_align_parallel_to_right_wall")
+        self.get_logger().info(
+            f"Nav2 aligning to right wall at {distance:.2f} m; "
+            f"target is {float(self.get_parameter('target_wall_distance').value):.2f} m."
+        )
+        future = self._navigation.send_goal_async(request)
+        future.add_done_callback(self._alignment_goal_response)
+
+    def _alignment_goal_response(self, future):
+        handle = future.result()
+        if handle is None or not handle.accepted:
+            self.get_logger().warn("Nav2 rejected wall alignment; retrying.")
+            self._alignment_pending = False
+            self._alignment_claimed_at = None
+            return
+        self._alignment_goal_handle = handle
+        result = handle.get_result_async()
+        result.add_done_callback(self._alignment_goal_result)
+
+    def _alignment_goal_result(self, future):
+        result = future.result()
+        self._alignment_goal_handle = None
+        self._alignment_pending = False
+        if result is not None and result.status == 4 and not self._returning_home:
+            self._alignment_complete = True
+            self._progress_pose = self._pose
+            self._progress_time = self.get_clock().now()
+            self._set_state("wall_alignment_complete")
+            self.get_logger().info(
+                "Nav2 wall alignment complete; handing off to wall tracing."
+            )
+        elif not self._returning_home:
+            self._alignment_claimed_at = None
+            self.get_logger().warn("Nav2 wall alignment failed; retrying.")
+
     def _update_progress(self):
         if self._pose is None:
             return False
@@ -234,6 +340,24 @@ class ClockwiseWallTracer(Node):
         front = front[np.isfinite(front)]
         front_distance = float(np.min(front)) if len(front) else scan.range_max
         wall = self._right_wall(ranges, angles)
+        if (bool(self.get_parameter("align_with_nav2").value)
+                and not self._alignment_complete):
+            if wall is None:
+                self._active.publish(Bool(data=False))
+                self._set_state("waiting_for_right_wall_to_align")
+                return
+            self._active.publish(Bool(data=True))
+            self._cmd.publish(Twist())
+            if self._alignment_claimed_at is None:
+                self._alignment_claimed_at = now
+                self._set_state("claiming_nav2_for_wall_alignment")
+                return
+            settle = float(self.get_parameter("alignment_settle_time").value)
+            if (not self._alignment_pending
+                    and (now - self._alignment_claimed_at).nanoseconds
+                    >= settle * 1e9):
+                self._start_wall_alignment(wall, now)
+            return
         if wall is not None:
             self._last_wall_time = now
         recently_seen = (
