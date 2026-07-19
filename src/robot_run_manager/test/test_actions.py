@@ -16,6 +16,7 @@ from robot_run_manager.main import (
     ACTION_GROUPS,
     ACTION_TOOLTIPS,
     IMPLEMENTED_ACTIONS,
+    TUNING_VARIABLES,
 )
 
 
@@ -28,3 +29,12 @@ def test_every_implemented_action_has_a_button():
     assert IMPLEMENTED_ACTIONS <= buttons
     assert buttons == set(ACTION_TOOLTIPS)
     assert all(ACTION_TOOLTIPS.values())
+
+
+def test_tuning_variables_have_safe_ranges_and_descriptions():
+    assert TUNING_VARIABLES
+    for specification in TUNING_VARIABLES.values():
+        name, group, minimum, maximum, default, decimals, description = specification
+        assert name and group and description
+        assert minimum <= default <= maximum
+        assert decimals in (0, 1, 2)

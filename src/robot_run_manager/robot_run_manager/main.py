@@ -25,7 +25,7 @@ import subprocess
 import sys
 
 from geometry_msgs.msg import Twist
-from PyQt5.QtCore import QProcess, QTimer, Qt
+from PyQt5.QtCore import QProcess, QSettings, QTimer, Qt
 from PyQt5.QtWidgets import (
     QApplication,
     QComboBox,
@@ -38,7 +38,10 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
+    QSlider,
     QStatusBar,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -164,6 +167,58 @@ RECORD_TOPICS = [
     '/relay_status',
 ]
 
+TUNING_VARIABLES = {
+    'target_wall_distance': (
+        'Wall distance', 'Wall follower', 0.60, 1.50, 1.05, 2,
+        'Desired distance from the robot center to the right wall. Larger '
+        'values leave more chassis clearance.'
+    ),
+    'linear_speed': (
+        'Wall speed', 'Wall follower', 0.05, 0.40, 0.28, 2,
+        'Forward speed after Nav2 hands control to direct wall following.'
+    ),
+    'nav2_wall_follow_distance': (
+        'Nav2 straight lead-in', 'Wall follower', 1.0, 6.0, 3.0, 1,
+        'Distance Nav2 follows the fitted wall line before wall control takes over.'
+    ),
+    'wall_fit_inlier_distance': (
+        'LiDAR line tolerance', 'Wall follower', 0.03, 0.25, 0.10, 2,
+        'Maximum point-to-line error accepted by the robust wall fit.'
+    ),
+    'information_weight': (
+        'Unknown-space reward', 'Global frontier planner', 0.0, 10.0, 4.0, 1,
+        'Reward per square metre of unknown space visible at a frontier.'
+    ),
+    'frontier_bonus': (
+        'Frontier bonus', 'Global frontier planner', 0.0, 20.0, 6.0, 1,
+        'Fixed reward for choosing a reachable frontier instead of open-space travel.'
+    ),
+    'revisit_weight': (
+        'Revisited-route penalty', 'Global frontier planner', 0.0, 10.0, 3.0, 1,
+        'Penalty for each planned metre overlapping previously traveled territory.'
+    ),
+    'visited_radius': (
+        'Visited corridor radius', 'Global frontier planner', 0.20, 2.00, 0.75, 2,
+        'Radius around recorded travel that counts as already visited.'
+    ),
+    'travel_weight': (
+        'Route-length penalty', 'Global frontier planner', 0.0, 2.0, 0.20, 2,
+        'General cost for distant goals, independent of whether the route is new.'
+    ),
+    'forward_weight': (
+        'Forward preference', 'Global frontier planner', 0.0, 8.0, 2.0, 1,
+        'Reward for frontiers already aligned with the robot heading.'
+    ),
+    'reverse_penalty': (
+        'Rear-goal penalty', 'Global frontier planner', 0.0, 15.0, 6.0, 1,
+        'Discourages turning toward goals behind the robot when forward options exist.'
+    ),
+    'clearance_weight': (
+        'Obstacle-clearance reward', 'Global frontier planner', 0.0, 12.0, 5.0, 1,
+        'Makes A* favor route cells farther from obstacles; high values can add detours.'
+    ),
+}
+
 
 def find_workspace():
     """Find the source workspace without assuming the same home directory."""
@@ -196,6 +251,9 @@ class RunManagerWindow(QMainWindow):
         self.run_metadata = None
         self.close_pending = False
         self.combined_wall_mapping = False
+        self.settings = QSettings('test_ws', 'Robot Run Manager')
+        self.config_sliders = {}
+        self.config_value_labels = {}
 
         self.stop_timer = QTimer(self)
         self.stop_timer.setInterval(50)
@@ -209,6 +267,8 @@ class RunManagerWindow(QMainWindow):
     def _build_ui(self):
         root = QWidget()
         root_layout = QVBoxLayout(root)
+        tabs = QTabWidget()
+        tabs.addTab(root, 'Operations')
 
         title = QLabel('Robot Run Manager')
         title.setAlignment(Qt.AlignCenter)
@@ -347,10 +407,92 @@ class RunManagerWindow(QMainWindow):
             self.install_desktop_launcher
         )
 
-        self.setCentralWidget(root)
+        tabs.addTab(self._build_configuration_tab(), 'Configuration')
+        self.setCentralWidget(tabs)
         status = QStatusBar()
         status.showMessage('Ready for preflight')
         self.setStatusBar(status)
+
+    def _build_configuration_tab(self):
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        introduction = QLabel(
+            'These values are applied the next time a mapper or wall follower '
+            'starts. Hover over a slider for the same description.'
+        )
+        introduction.setWordWrap(True)
+        page_layout.addWidget(introduction)
+        groups = {}
+        rows = {}
+        for key, specification in TUNING_VARIABLES.items():
+            name, group_name, minimum, maximum, default, decimals, description = (
+                specification
+            )
+            if group_name not in groups:
+                box = QGroupBox(group_name)
+                layout = QGridLayout(box)
+                layout.setColumnStretch(1, 1)
+                groups[group_name] = layout
+                rows[group_name] = 0
+                page_layout.addWidget(box)
+            layout = groups[group_name]
+            row = rows[group_name]
+            scale = 10 ** decimals
+            slider = QSlider(Qt.Horizontal)
+            slider.setRange(round(minimum * scale), round(maximum * scale))
+            stored = self.settings.value(f'tuning/{key}', default, type=float)
+            stored = min(maximum, max(minimum, stored))
+            slider.setValue(round(stored * scale))
+            slider.setToolTip(description)
+            value_label = QLabel()
+            value_label.setMinimumWidth(55)
+            description_label = QLabel(description)
+            description_label.setWordWrap(True)
+            description_label.setStyleSheet('color: #555;')
+            slider.valueChanged.connect(
+                lambda value, setting=key, digits=decimals, factor=scale:
+                self._configuration_changed(setting, value, factor, digits)
+            )
+            self.config_sliders[key] = slider
+            self.config_value_labels[key] = value_label
+            layout.addWidget(QLabel(name), row, 0)
+            layout.addWidget(slider, row, 1)
+            layout.addWidget(value_label, row, 2)
+            layout.addWidget(description_label, row + 1, 0, 1, 3)
+            rows[group_name] += 2
+            self._configuration_changed(key, slider.value(), scale, decimals)
+        reset = QPushButton('Reset tuning defaults')
+        reset.setToolTip('Restore every tuning slider to its documented default.')
+        reset.clicked.connect(self._reset_configuration)
+        page_layout.addWidget(reset)
+        page_layout.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(page)
+        return scroll
+
+    def _configuration_changed(self, key, slider_value, scale, decimals):
+        value = slider_value / scale
+        self.config_value_labels[key].setText(f'{value:.{decimals}f}')
+        self.settings.setValue(f'tuning/{key}', value)
+
+    def _reset_configuration(self):
+        for key, specification in TUNING_VARIABLES.items():
+            default = specification[4]
+            decimals = specification[5]
+            self.config_sliders[key].setValue(round(default * 10 ** decimals))
+
+    def _configuration_value(self, key):
+        decimals = TUNING_VARIABLES[key][5]
+        return self.config_sliders[key].value() / 10 ** decimals
+
+    def _planner_launch_arguments(self):
+        keys = (
+            'information_weight', 'frontier_bonus', 'revisit_weight',
+            'visited_radius', 'travel_weight', 'forward_weight',
+            'reverse_penalty', 'clearance_weight',
+        )
+        return [f'{key}:={self._configuration_value(key)}' for key in keys]
 
     def _role_changed(self):
         self.preflight_passed = False
@@ -771,7 +913,8 @@ class RunManagerWindow(QMainWindow):
         self._start_process(
             'wandering_mapper', 'ros2', [
                 'launch', 'create2_demo', 'wandering_mapping.launch.py',
-            ]
+                *self._planner_launch_arguments(),
+            ],
         )
 
     def stop_wandering_mapper(self):
@@ -820,7 +963,8 @@ class RunManagerWindow(QMainWindow):
             self._start_process(
                 'wandering_mapper', 'ros2', [
                     'launch', 'create2_demo', 'wandering_mapping.launch.py',
-                ]
+                    *self._planner_launch_arguments(),
+                ],
             )
         self.combined_wall_mapping = True
         self._start_process(
@@ -832,8 +976,14 @@ class RunManagerWindow(QMainWindow):
                 'clockwise_wall_tracer.py',
                 '--ros-args',
                 '-p', 'use_sim_time:=true',
-                '-p', 'target_wall_distance:=1.05',
-                '-p', 'linear_speed:=0.28',
+                '-p', 'target_wall_distance:='
+                f'{self._configuration_value("target_wall_distance")}',
+                '-p', 'linear_speed:='
+                f'{self._configuration_value("linear_speed")}',
+                '-p', 'nav2_wall_follow_distance:='
+                f'{self._configuration_value("nav2_wall_follow_distance")}',
+                '-p', 'wall_fit_inlier_distance:='
+                f'{self._configuration_value("wall_fit_inlier_distance")}',
                 '-p', 'exploration_evaluation_period:=25.0',
                 '-p', 'global_planning_cooldown:=300.0',
             ],
