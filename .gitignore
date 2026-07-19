@@ -39,3 +39,6 @@ Makefile
 # Misc
 *.log
 .cache/
+
+# Robot run datasets (transfer directly; do not commit large rosbag files)
+runs/

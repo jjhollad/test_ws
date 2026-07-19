@@ -9,7 +9,9 @@
 
 set -euo pipefail
 
-PATTERN='ros2|gazebo|gzserver|gzclient|ign|nav2|amcl|bt_navigator|controller_server|velocity_smoother|planner_server|behavior_server|waypoint_follower|smoother_server|rviz2|teleop_twist_joy|teleop_node|joy_node|generic_motor_driver|relay_controller|robot_state_publisher|joint_state_publisher|slam_toolbox|async_slam|rplidar|assisted_teleop|cmd_vel_relay|move_to_free|mqtt|autodock|cliff_detection|moveit|move_group|basic_navigator|create_driver|generic_motor'
+# Do not use a bare "ign" alternative: it also matches unrelated words such
+# as "signal" in system process command lines.
+PATTERN='ros2|gazebo|gzserver|gzclient|ign gazebo|ignition gazebo|nav2|amcl|bt_navigator|controller_server|velocity_smoother|planner_server|behavior_server|waypoint_follower|smoother_server|rviz2|teleop_twist_joy|teleop_node|joy_node|generic_motor_driver|relay_controller|robot_state_publisher|joint_state_publisher|slam_toolbox|async_slam|rplidar|assisted_teleop|cmd_vel_relay|move_to_free|mqtt|autodock|cliff_detection|moveit|move_group|basic_navigator|create_driver|generic_motor|create2_demo|clockwise_wall_tracer|wandering_mapper|scan_clearer'
 
 if [[ "${KILL_PYTHON:-0}" == "1" ]]; then
   PATTERN="${PATTERN}|python3"
