@@ -27,9 +27,9 @@ robot when replaying.
   clearing, wall tracing, and OpenCV center-biased wandering mapper;
 - coordinated OpenCV frontier planning and clockwise wall following using the
   tuned 1.05 m offset, 0.28 m/s speed, and `/wall_tracing_active` handoff;
-- Nav2-controlled wall acquisition that fits the nearest right-side surface,
-  aligns at the configured offset, drives a straight 3 m wall-parallel route,
-  then hands off to direct tracing;
+- Nav2-controlled wall acquisition that uses a robust straight-line fit for
+  the nearest right-side LiDAR surface, aligns at the configured offset, and
+  follows collinear 0.5 m waypoints for 3 m before direct tracing takes over;
 - automatic mission completion after sustained frontier exhaustion: wall
   following stops, Nav2 returns to the recorded start pose, and mapping ends;
 - one-click wall-mapping bringup starts the corridor world, RViz, SLAM, Nav2,

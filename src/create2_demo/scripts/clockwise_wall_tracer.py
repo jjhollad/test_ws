@@ -50,7 +50,9 @@ class ClockwiseWallTracer(Node):
             "alignment_lead_in": 0.60,
             "nav2_wall_follow_distance": 3.0,
             "wall_fit_max_range": 3.0,
-            "wall_fit_depth": 0.75,
+            "wall_fit_inlier_distance": 0.10,
+            "wall_fit_minimum_span": 0.80,
+            "alignment_waypoint_spacing": 0.50,
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value)
@@ -84,6 +86,9 @@ class ClockwiseWallTracer(Node):
         self._tf_listener = TransformListener(self._tf_buffer, self)
         self._trace_path_pub = self.create_publisher(
             Path, "/robot_global_trace", 10
+        )
+        self._alignment_path_pub = self.create_publisher(
+            Path, "/wall_alignment_path", 10
         )
         self.create_subscription(
             LaserScan, "/scan", self._scan_callback, qos_profile_sensor_data
@@ -189,7 +194,10 @@ class ClockwiseWallTracer(Node):
 
     def _right_wall(self, ranges, angles):
         valid = np.isfinite(ranges)
-        x, y = ranges * np.cos(angles), ranges * np.sin(angles)
+        x = np.full_like(ranges, np.nan)
+        y = np.full_like(ranges, np.nan)
+        x[valid] = ranges[valid] * np.cos(angles[valid])
+        y[valid] = ranges[valid] * np.sin(angles[valid])
         selected = (
             valid
             & (angles < math.radians(-35))
@@ -199,22 +207,60 @@ class ClockwiseWallTracer(Node):
         side_ranges = ranges[selected]
         if len(side_ranges) < 8:
             return None
-        # Fit only the nearest coherent surface. This prevents a doorway or a
-        # farther parallel wall from pulling the startup heading off the wall
-        # immediately beside the robot.
-        near = float(np.percentile(side_ranges, 25.0))
-        depth = float(self.get_parameter("wall_fit_depth").value)
-        selected &= ranges <= near + depth
         points = np.column_stack((x[selected], y[selected]))
-        if len(points) < 8:
+        # RANSAC keeps the longest strongly supported straight surface and
+        # rejects doorway edges, corners, furniture, and farther walls.
+        threshold = float(
+            self.get_parameter("wall_fit_inlier_distance").value
+        )
+        generator = np.random.default_rng(7)
+        best_inliers = None
+        best_score = -1.0
+        best_span = 0.0
+        trials = min(160, max(40, len(points) * 2))
+        for _ in range(trials):
+            first, second = generator.choice(len(points), 2, replace=False)
+            direction = points[second] - points[first]
+            length = float(np.linalg.norm(direction))
+            if length < 0.30:
+                continue
+            direction /= length
+            normal = np.array([-direction[1], direction[0]])
+            errors = np.abs((points - points[first]) @ normal)
+            inliers = errors <= threshold
+            if np.count_nonzero(inliers) < 8:
+                continue
+            projections = points[inliers] @ direction
+            span = float(np.ptp(projections))
+            support = int(np.count_nonzero(inliers))
+            proximity = max(0.20, float(np.median(np.linalg.norm(
+                points[inliers], axis=1
+            ))))
+            score = span * math.sqrt(support) / proximity
+            if score > best_score:
+                best_score = score
+                best_span = span
+                best_inliers = inliers
+        if best_inliers is None or best_span < float(
+            self.get_parameter("wall_fit_minimum_span").value
+        ):
             return None
         vx, vy, px, py = cv2.fitLine(
-            points.astype(np.float32), cv2.DIST_HUBER, 0, 0.01, 0.01
+            points[best_inliers].astype(np.float32),
+            cv2.DIST_HUBER,
+            0,
+            0.01,
+            0.01,
         ).reshape(-1)
         yaw = math.atan2(float(vy), float(vx))
-        if math.cos(yaw) < 0.0:
-            yaw = math.atan2(-float(vy), -float(vx))
-        distance = abs(float(vx) * float(py) - float(vy) * float(px))
+        # Choose the direction for which this surface lies on the robot's
+        # right. The left-normal signed distance must therefore be negative.
+        signed_distance = -float(vy) * float(px) + float(vx) * float(py)
+        if signed_distance > 0.0:
+            vx, vy = -vx, -vy
+            yaw = math.atan2(float(vy), float(vx))
+            signed_distance = -signed_distance
+        distance = -signed_distance
         return distance, yaw
 
     @staticmethod
@@ -280,11 +326,23 @@ class ClockwiseWallTracer(Node):
             pose.pose.orientation.w = math.cos(goal_yaw / 2.0)
             return pose
 
+        spacing = max(
+            0.20,
+            float(self.get_parameter("alignment_waypoint_spacing").value),
+        )
+        straight_steps = max(1, int(math.ceil(straight_distance / spacing)))
+        route_distances = [lead_in]
+        route_distances.extend(
+            lead_in + straight_distance * step / straight_steps
+            for step in range(1, straight_steps + 1)
+        )
         request = NavigateThroughPoses.Goal()
-        request.poses = [
-            wall_pose(lead_in),
-            wall_pose(lead_in + straight_distance),
-        ]
+        request.poses = [wall_pose(distance) for distance in route_distances]
+        display_path = Path()
+        display_path.header.frame_id = "map"
+        display_path.header.stamp = now.to_msg()
+        display_path.poses = request.poses
+        self._alignment_path_pub.publish(display_path)
         self._alignment_pending = True
         self._set_state("nav2_align_parallel_to_right_wall")
         self.get_logger().info(
