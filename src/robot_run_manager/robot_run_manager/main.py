@@ -32,6 +32,7 @@ from PyQt5.QtWidgets import (
     QFileDialog,
     QGridLayout,
     QGroupBox,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -84,6 +85,7 @@ ACTION_GROUPS = {
         'Download Code',
         'Upload Code',
         'View Logs',
+        'Flag & Open Logs',
         'Install Desktop Launcher',
     ],
 }
@@ -122,6 +124,10 @@ ACTION_TOOLTIPS = {
     'Download Code': 'Pull code with Git fast-forward only; requires a clean working tree.',
     'Upload Code': 'Commit only this utility and .gitignore, then push to GitHub.',
     'View Logs': 'Open the workspace ROS build and runtime log directory.',
+    'Flag & Open Logs': (
+        'Add a timestamped identifier to the log index and open recent logs '
+        'in a terminal reader.'
+    ),
     'Install Desktop Launcher': 'Create or refresh the desktop icon and ROS startup wrapper.',
 }
 
@@ -150,6 +156,7 @@ IMPLEMENTED_ACTIONS = {
     'Download Code',
     'Upload Code',
     'View Logs',
+    'Flag & Open Logs',
     'Install Desktop Launcher',
     'Start Wandering Mapper',
     'Stop Wandering Mapper',
@@ -595,6 +602,7 @@ class RunManagerWindow(QMainWindow):
         self.buttons['Download Code'].clicked.connect(self.download_code)
         self.buttons['Upload Code'].clicked.connect(self.upload_code)
         self.buttons['View Logs'].clicked.connect(self.view_logs)
+        self.buttons['Flag & Open Logs'].clicked.connect(self.flag_and_open_logs)
         self.buttons['Install Desktop Launcher'].clicked.connect(
             self.install_desktop_launcher
         )
@@ -813,6 +821,7 @@ class RunManagerWindow(QMainWindow):
             running, recording, mapping, simulation, replaying,
         ]))
         self.buttons['View Logs'].setEnabled(True)
+        self.buttons['Flag & Open Logs'].setEnabled(True)
         self.buttons['Install Desktop Launcher'].setEnabled(True)
         active = []
         if running:
@@ -1518,6 +1527,70 @@ class RunManagerWindow(QMainWindow):
         target = self.workspace / 'log'
         target.mkdir(parents=True, exist_ok=True)
         self._start_process('logs', 'xdg-open', [str(target)])
+
+    def flag_and_open_logs(self):
+        identifier, accepted = QInputDialog.getText(
+            self,
+            'Flag logs',
+            'Identifier for this point in the logs:',
+        )
+        identifier = identifier.strip()
+        if not accepted:
+            return
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_. -]{0,79}', identifier):
+            QMessageBox.warning(
+                self,
+                'Invalid log identifier',
+                'Use 1–80 letters, numbers, spaces, periods, underscores, or hyphens.',
+            )
+            return
+        log_dir = self.workspace / 'log'
+        log_dir.mkdir(parents=True, exist_ok=True)
+        flags_path = log_dir / 'user_log_flags.csv'
+        new_file = not flags_path.exists()
+        with flags_path.open('a', newline='', encoding='utf-8') as stream:
+            writer = csv.writer(stream)
+            if new_file:
+                writer.writerow([
+                    'utc_timestamp', 'ros_time_nanoseconds', 'identifier',
+                    'active_run', 'managed_processes',
+                ])
+            writer.writerow([
+                self._utc_now(),
+                self.ros_node.get_clock().now().nanoseconds,
+                identifier,
+                str(self.active_run or ''),
+                self.process_label.text(),
+            ])
+        if self.active_run is not None and self._is_running('recording'):
+            events_path = self.active_run / 'events.csv'
+            with events_path.open('a', newline='', encoding='utf-8') as stream:
+                csv.writer(stream).writerow([
+                    self._utc_now(),
+                    self.ros_node.get_clock().now().nanoseconds,
+                    f'log_flag:{identifier}',
+                    self.operator_input.text().strip(),
+                    self.scenario_input.text().strip(),
+                ])
+        recent = sorted(
+            (
+                path for path in log_dir.rglob('*')
+                if path.is_file() and path != flags_path
+            ),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )[:5]
+        terminal = shutil.which('x-terminal-emulator')
+        if terminal:
+            self._start_process(
+                'logs', terminal, ['-e', 'less', '+G', str(flags_path), *map(str, recent)]
+            )
+        else:
+            self._start_process('logs', 'xdg-open', [str(log_dir)])
+        self.output.appendPlainText(
+            f'Log flag written: {identifier} ({flags_path})'
+        )
+        self.statusBar().showMessage(f'Logs flagged: {identifier}')
 
     def install_desktop_launcher(self):
         answer = QMessageBox.question(

@@ -58,6 +58,9 @@ robot when replaying.
   thresholds, scan-buffer size/range, local link matching, and loop search;
 - **Simulation speed multiplier** targets 0.1×–3.0× Gazebo time, while RViz's
   **Simulation Clock** panel shows the `/clock`-driven ROS time;
+- **Flag & Open Logs** writes a timestamped identifier to
+  `log/user_log_flags.csv`, mirrors it into an active run's events, and opens
+  the flag index plus recent log files in a terminal reader;
 - one-click wall-mapping bringup starts the corridor world, RViz, SLAM, Nav2,
   chassis-aware LiDAR filtering, the global planner, and wall following;
 - timestamped rosbag runs with JSON metadata and CSV event markers;
