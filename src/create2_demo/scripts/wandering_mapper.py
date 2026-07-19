@@ -58,10 +58,10 @@ class WanderingMapper(Node):
             "lidar_corridor_margin": 0.55,
             "lidar_corridor_weight": 2.0,
             "long_path_weight": 2.0, "turn_penalty": 1.5,
-            # Let Nav2 execute a route to a real result. Aggressive rolling
-            # preemption made short routes appear instantly complete and kept
-            # replacing goals before the robot could make physical progress.
-            "rolling_replan_poses": 0, "rolling_replan_distance": 3.0,
+            # Extend only near the route tail and only after this much stable
+            # execution, avoiding the old rapid-preemption deadlock.
+            "rolling_replan_poses": 4, "rolling_replan_distance": 4.0,
+            "route_extension_period": 3.0,
             "wall_heading_radius": 1.50,
             "progress_timeout": 20.0, "significant_progress": 0.25,
             "stuck_radius": 2.0, "stuck_timeout": 120.0,
@@ -1001,13 +1001,16 @@ class WanderingMapper(Node):
         replan_distance = float(
             self.get_parameter("rolling_replan_distance").value
         )
+        extension_period = float(
+            self.get_parameter("route_extension_period").value
+        )
         navigation_seconds = (
             feedback.navigation_time.sec
             + feedback.navigation_time.nanosec / 1e9
         )
         if (replan_poses > 0
                 and not self._rolling_replan_started
-                and navigation_seconds >= 1.0
+                and navigation_seconds >= extension_period
                 and feedback.number_of_poses_remaining <= replan_poses
                 and distance <= replan_distance):
             self._rolling_replan_started = True
@@ -1016,8 +1019,9 @@ class WanderingMapper(Node):
             self._blacklist.append(self._target)
             self._blacklist = self._blacklist[-20:]
             self.get_logger().info(
-                f"Preplanning beyond the final "
-                f"{feedback.number_of_poses_remaining} poses."
+                f"Extending the Nav2 route beyond its final "
+                f"{feedback.number_of_poses_remaining} poses after "
+                f"{navigation_seconds:.1f} s of stable execution."
             )
             self._plan(preempting=True)
 

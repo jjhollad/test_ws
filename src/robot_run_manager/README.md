@@ -41,6 +41,9 @@ robot when replaying.
 - persistent **Configuration** tab with described sliders for wall geometry,
   wall speed, Nav2 lead-in, LiDAR fitting, and global-planner reward/penalty
   weights; values apply to the next behavior start;
+- guarded rolling Nav2 route extension, adjustable with **Path extension
+  interval**, adds farther frontier poses near the route tail without rapid
+  mid-route preemption;
 - one-click wall-mapping bringup starts the corridor world, RViz, SLAM, Nav2,
   chassis-aware LiDAR filtering, the global planner, and wall following;
 - timestamped rosbag runs with JSON metadata and CSV event markers;

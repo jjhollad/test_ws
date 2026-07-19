@@ -222,6 +222,11 @@ TUNING_VARIABLES = {
         'Obstacle-clearance reward', 'Global frontier planner', 0.0, 12.0, 5.0, 1,
         'Makes A* favor route cells farther from obstacles; high values can add detours.'
     ),
+    'route_extension_period': (
+        'Path extension interval', 'Global frontier planner', 1.0, 15.0, 3.0, 1,
+        'Minimum seconds of stable Nav2 motion before a route near its tail is '
+        'extended toward the next frontier. Lower values update more often.'
+    ),
 }
 
 
@@ -496,6 +501,7 @@ class RunManagerWindow(QMainWindow):
             'information_weight', 'frontier_bonus', 'revisit_weight',
             'visited_radius', 'travel_weight', 'forward_weight',
             'reverse_penalty', 'clearance_weight',
+            'route_extension_period',
         )
         return [f'{key}:={self._configuration_value(key)}' for key in keys]
 
