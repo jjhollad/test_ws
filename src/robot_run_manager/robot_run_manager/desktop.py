@@ -23,7 +23,7 @@ def wrapper_text(workspace):
     quoted_workspace = shlex.quote(str(workspace))
     return (
         '#!/usr/bin/env bash\n'
-        'set -euo pipefail\n'
+        'set -eo pipefail\n'
         f'cd {quoted_workspace}\n'
         'source /opt/ros/humble/setup.bash\n'
         'colcon build --symlink-install --base-paths src\n'
