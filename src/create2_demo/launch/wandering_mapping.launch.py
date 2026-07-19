@@ -30,6 +30,10 @@ def generate_launch_description():
         DeclareLaunchArgument("revisit_weight", default_value="3.0"),
         DeclareLaunchArgument("visited_radius", default_value="0.75"),
         DeclareLaunchArgument("visit_record_spacing", default_value="0.25"),
+        DeclareLaunchArgument("unavoidable_transit_threshold", default_value="1.0"),
+        DeclareLaunchArgument("wall_transit_distance", default_value="1.05"),
+        DeclareLaunchArgument("wall_transit_weight", default_value="4.0"),
+        DeclareLaunchArgument("unavoidable_route_horizon", default_value="25.0"),
         DeclareLaunchArgument("travel_weight", default_value="0.20"),
         DeclareLaunchArgument("continuity_weight", default_value="0.80"),
         DeclareLaunchArgument("forward_weight", default_value="2.0"),
@@ -71,6 +75,12 @@ def generate_launch_description():
                 "revisit_weight": LaunchConfiguration("revisit_weight"),
                 "visited_radius": LaunchConfiguration("visited_radius"),
                 "visit_record_spacing": LaunchConfiguration("visit_record_spacing"),
+                "unavoidable_transit_threshold": LaunchConfiguration(
+                    "unavoidable_transit_threshold"
+                ),
+                "wall_transit_distance": LaunchConfiguration("wall_transit_distance"),
+                "wall_transit_weight": LaunchConfiguration("wall_transit_weight"),
+                "unavoidable_route_horizon": LaunchConfiguration("unavoidable_route_horizon"),
                 "travel_weight": LaunchConfiguration("travel_weight"),
                 "continuity_weight": LaunchConfiguration("continuity_weight"),
                 "forward_weight": LaunchConfiguration("forward_weight"),

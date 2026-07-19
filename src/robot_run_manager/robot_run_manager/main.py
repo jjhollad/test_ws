@@ -227,6 +227,17 @@ TUNING_VARIABLES = {
         'Minimum seconds of stable Nav2 motion before a route near its tail is '
         'extended toward the next frontier. Lower values update more often.'
     ),
+    'wall_transit_weight': (
+        'Mapped-area wall preference', 'Global frontier planner', 0.0, 10.0, 4.0, 1,
+        'Strength of the safe wall-offset preference when every frontier route '
+        'must cross previously traveled space.'
+    ),
+    'unavoidable_route_horizon': (
+        'Unavoidable transit horizon', 'Global frontier planner',
+        10.0, 40.0, 25.0, 1,
+        'Maximum wall-biased route length prepared through mapped space before '
+        'rolling extension continues toward the frontier.'
+    ),
 }
 
 
@@ -502,8 +513,16 @@ class RunManagerWindow(QMainWindow):
             'visited_radius', 'travel_weight', 'forward_weight',
             'reverse_penalty', 'clearance_weight',
             'route_extension_period',
+            'wall_transit_weight', 'unavoidable_route_horizon',
         )
-        return [f'{key}:={self._configuration_value(key)}' for key in keys]
+        arguments = [
+            f'{key}:={self._configuration_value(key)}' for key in keys
+        ]
+        arguments.append(
+            'wall_transit_distance:='
+            f'{self._configuration_value("target_wall_distance")}'
+        )
+        return arguments
 
     def _role_changed(self):
         self.preflight_passed = False

@@ -42,6 +42,9 @@ class WanderingMapper(Node):
             "information_weight": 4.0, "frontier_bonus": 6.0,
             "travel_weight": 0.20, "revisit_weight": 3.0,
             "visited_radius": 0.75, "visit_record_spacing": 0.25,
+            "unavoidable_transit_threshold": 1.0,
+            "wall_transit_distance": 1.05, "wall_transit_weight": 4.0,
+            "unavoidable_route_horizon": 25.0,
             # A new SLAM map is usually only a small free patch.  Requiring a
             # long first route creates a deadlock: exploration cannot move
             # until the map grows, and the map cannot grow until exploration
@@ -443,7 +446,10 @@ class WanderingMapper(Node):
         corridor[values > int(self.get_parameter("free_threshold").value)] = 0
         return corridor.astype(bool), candidates
 
-    def _astar(self, reachable, clearance, start, goal, resolution):
+    def _astar(
+        self, reachable, clearance, start, goal, resolution,
+        wall_transit=False,
+    ):
         moves = [(-1, 0, 1), (1, 0, 1), (0, -1, 1), (0, 1, 1),
                  (-1, -1, 1.414), (-1, 1, 1.414),
                  (1, -1, 1.414), (1, 1, 1.414)]
@@ -451,6 +457,12 @@ class WanderingMapper(Node):
         previous: Dict[GridPoint, GridPoint] = {}
         costs = {start: 0.0}
         weight = float(self.get_parameter("clearance_weight").value)
+        wall_distance = float(
+            self.get_parameter("wall_transit_distance").value
+        )
+        wall_weight = float(
+            self.get_parameter("wall_transit_weight").value
+        )
         while queue:
             _, current = heapq.heappop(queue)
             if current == goal:
@@ -460,7 +472,15 @@ class WanderingMapper(Node):
                 if not self._inside(reachable, nxt) or not reachable[nxt]:
                     continue
                 clearance_m = max(0.05, clearance[nxt] * resolution)
-                cost = costs[current] + step * (1.0 + weight / clearance_m)
+                if wall_transit:
+                    # Stay at a safe, wall-following offset instead of drifting
+                    # to the center of already mapped corridors.
+                    preference = wall_weight * abs(
+                        clearance_m - wall_distance
+                    )
+                else:
+                    preference = weight / clearance_m
+                cost = costs[current] + step * (1.0 + preference)
                 if cost >= costs.get(nxt, float("inf")):
                     continue
                 costs[nxt], previous[nxt] = cost, current
@@ -829,8 +849,58 @@ class WanderingMapper(Node):
                 unavoidable_revisit = min(
                     candidate[6] for candidate in viable
                 )
-                revisit_weight = float(
-                    self.get_parameter("revisit_weight").value
+                transit_threshold = float(
+                    self.get_parameter("unavoidable_transit_threshold").value
+                )
+                unavoidable_transit = (
+                    unavoidable_revisit >= transit_threshold
+                )
+                if unavoidable_transit:
+                    wall_viable = []
+                    for candidate in viable:
+                        base_score, goal, size, _, gain, _, _ = candidate
+                        wall_raw = self._astar(
+                            reachable, clearance, robot, goal,
+                            self._map.info.resolution, wall_transit=True,
+                        )
+                        wall_revisit = self._route_revisit_distance(
+                            wall_raw, visited, self._map.info.resolution
+                        )
+                        wall_raw = self._rolling_horizon(
+                            wall_raw, self._map.info.resolution,
+                            float(self.get_parameter(
+                                "unavoidable_route_horizon"
+                            ).value),
+                        )
+                        wall_length = self._route_length(
+                            wall_raw, self._map.info.resolution
+                        )
+                        wall_poses = self._poses(
+                            self._map,
+                            self._smooth(
+                                wall_raw, reachable,
+                                self._map.info.resolution,
+                            ),
+                        )
+                        if len(wall_poses) >= minimum_poses:
+                            wall_viable.append((
+                                base_score, goal, size, wall_poses, gain,
+                                wall_length, wall_revisit,
+                            ))
+                    if wall_viable:
+                        viable = wall_viable
+                        unavoidable_revisit = min(
+                            candidate[6] for candidate in viable
+                        )
+                    self.get_logger().info(
+                        "Unavoidable mapped-area transit: using a wall-offset "
+                        "route with revisit penalties suspended.",
+                        throttle_duration_sec=5.0,
+                    )
+                revisit_weight = (
+                    0.0 if unavoidable_transit else float(
+                        self.get_parameter("revisit_weight").value
+                    )
                 )
 
                 def novelty_score(candidate):
