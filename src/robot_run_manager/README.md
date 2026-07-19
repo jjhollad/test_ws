@@ -30,6 +30,8 @@ robot when replaying.
 - Nav2-controlled wall acquisition that uses a robust straight-line fit for
   the nearest right-side LiDAR surface, aligns at the configured offset, and
   follows collinear 0.5 m waypoints for 3 m before direct tracing takes over;
+- strict wall-control handoff after every global-planning interval: the fitted
+  wall must exceed 5 m and the robot must be parallel and at the target offset;
 - automatic mission completion after sustained frontier exhaustion: wall
   following stops, Nav2 returns to the recorded start pose, and mapping ends;
 - novelty-biased global planning that rewards reachable unknown-space gain and

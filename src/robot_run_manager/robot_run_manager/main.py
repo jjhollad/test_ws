@@ -185,6 +185,11 @@ TUNING_VARIABLES = {
         'LiDAR line tolerance', 'Wall follower', 0.03, 0.25, 0.10, 2,
         'Maximum point-to-line error accepted by the robust wall fit.'
     ),
+    'minimum_handoff_wall_length': (
+        'Minimum handoff wall', 'Wall follower', 5.0, 10.0, 5.0, 1,
+        'Minimum continuous LiDAR-fitted wall length required before wall '
+        'following may take control from the global planner.'
+    ),
     'information_weight': (
         'Unknown-space reward', 'Global frontier planner', 0.0, 10.0, 4.0, 1,
         'Reward per square metre of unknown space visible at a frontier.'
@@ -984,6 +989,8 @@ class RunManagerWindow(QMainWindow):
                 f'{self._configuration_value("nav2_wall_follow_distance")}',
                 '-p', 'wall_fit_inlier_distance:='
                 f'{self._configuration_value("wall_fit_inlier_distance")}',
+                '-p', 'minimum_handoff_wall_length:='
+                f'{self._configuration_value("minimum_handoff_wall_length")}',
                 '-p', 'exploration_evaluation_period:=25.0',
                 '-p', 'global_planning_cooldown:=300.0',
             ],

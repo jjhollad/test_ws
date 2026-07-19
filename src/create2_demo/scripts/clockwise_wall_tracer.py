@@ -49,9 +49,12 @@ class ClockwiseWallTracer(Node):
             "alignment_settle_time": 0.75,
             "alignment_lead_in": 0.60,
             "nav2_wall_follow_distance": 3.0,
-            "wall_fit_max_range": 3.0,
+            "wall_fit_max_range": 8.0,
             "wall_fit_inlier_distance": 0.10,
             "wall_fit_minimum_span": 0.80,
+            "minimum_handoff_wall_length": 5.0,
+            "handoff_heading_tolerance": 0.17,
+            "handoff_distance_tolerance": 0.20,
             "alignment_waypoint_spacing": 0.50,
         }
         for name, value in defaults.items():
@@ -148,6 +151,9 @@ class ClockwiseWallTracer(Node):
         self._cooldown_until = now + Duration(seconds=cooldown)
         self._trace_start_time = None
         self._history.clear()
+        self._alignment_complete = False
+        self._alignment_pending = False
+        self._alignment_claimed_at = None
         self._set_state("yield_to_global_exploration")
         self.get_logger().info(
             f"Yielding clockwise tracing for {cooldown:.0f} s: {reason}."
@@ -200,8 +206,8 @@ class ClockwiseWallTracer(Node):
         y[valid] = ranges[valid] * np.sin(angles[valid])
         selected = (
             valid
-            & (angles < math.radians(-35))
-            & (angles > math.radians(-125))
+            & (angles < math.radians(-10))
+            & (angles > math.radians(-170))
             & (ranges < float(self.get_parameter("wall_fit_max_range").value))
         )
         side_ranges = ranges[selected]
@@ -261,7 +267,36 @@ class ClockwiseWallTracer(Node):
             yaw = math.atan2(float(vy), float(vx))
             signed_distance = -signed_distance
         distance = -signed_distance
-        return distance, yaw
+        return distance, yaw, best_span
+
+    def _wall_is_long_enough(self, wall):
+        return wall is not None and wall[2] > float(
+            self.get_parameter("minimum_handoff_wall_length").value
+        )
+
+    def _wall_is_handoff_eligible(self, wall):
+        if not self._wall_is_long_enough(wall):
+            return False
+        distance, relative_yaw, _ = wall
+        target = float(self.get_parameter("target_wall_distance").value)
+        return (
+            abs(distance - target) <= float(
+                self.get_parameter("handoff_distance_tolerance").value
+            )
+            and abs(relative_yaw) <= float(
+                self.get_parameter("handoff_heading_tolerance").value
+            )
+        )
+
+    def _current_right_wall(self):
+        if self._scan is None:
+            return None
+        ranges = np.asarray(self._scan.ranges, dtype=np.float64)
+        angles = (
+            self._scan.angle_min
+            + np.arange(len(ranges)) * self._scan.angle_increment
+        )
+        return self._right_wall(ranges, angles)
 
     @staticmethod
     def _yaw_from_quaternion(rotation):
@@ -288,7 +323,7 @@ class ClockwiseWallTracer(Node):
                 throttle_duration_sec=2.0,
             )
             return
-        distance, relative_wall_yaw = wall
+        distance, relative_wall_yaw, wall_span = wall
         robot_yaw = self._yaw_from_quaternion(transform.transform.rotation)
         # The fitted wall direction points forward. Its left normal points
         # from a right-side wall toward the robot. Move along that normal until
@@ -348,7 +383,8 @@ class ClockwiseWallTracer(Node):
         self.get_logger().info(
             f"Nav2 aligning to the nearby right wall at {distance:.2f} m, then "
             f"driving {straight_distance:.1f} m parallel at "
-            f"{float(self.get_parameter('target_wall_distance').value):.2f} m."
+            f"{float(self.get_parameter('target_wall_distance').value):.2f} m "
+            f"along a {wall_span:.1f} m LiDAR wall fit."
         )
         future = self._navigation.send_goal_async(request)
         future.add_done_callback(self._alignment_goal_response)
@@ -369,13 +405,24 @@ class ClockwiseWallTracer(Node):
         self._alignment_goal_handle = None
         self._alignment_pending = False
         if result is not None and result.status == 4 and not self._returning_home:
-            self._alignment_complete = True
-            self._progress_pose = self._pose
-            self._progress_time = self.get_clock().now()
-            self._set_state("wall_alignment_complete")
-            self.get_logger().info(
-                "Nav2 wall alignment complete; handing off to wall tracing."
-            )
+            wall = self._current_right_wall()
+            if self._wall_is_handoff_eligible(wall):
+                self._alignment_complete = True
+                self._progress_pose = self._pose
+                self._progress_time = self.get_clock().now()
+                self._set_state("wall_alignment_complete")
+                self.get_logger().info(
+                    f"Nav2 alignment verified on a {wall[2]:.1f} m wall; "
+                    "handing off to wall tracing."
+                )
+            else:
+                self._alignment_claimed_at = None
+                self._active.publish(Bool(data=False))
+                self._set_state("global_planning_until_long_wall_alignment")
+                self.get_logger().info(
+                    "Wall handoff withheld: requires >5 m wall, parallel "
+                    "heading, and target right-side distance."
+                )
         elif not self._returning_home:
             self._alignment_claimed_at = None
             self.get_logger().warn("Nav2 wall alignment failed; retrying.")
@@ -435,6 +482,10 @@ class ClockwiseWallTracer(Node):
             if wall is None:
                 self._active.publish(Bool(data=False))
                 self._set_state("waiting_for_right_wall_to_align")
+                return
+            if not self._wall_is_long_enough(wall):
+                self._active.publish(Bool(data=False))
+                self._set_state("global_planning_until_wall_exceeds_5m")
                 return
             self._active.publish(Bool(data=True))
             self._cmd.publish(Twist())
@@ -502,7 +553,7 @@ class ClockwiseWallTracer(Node):
             command.linear.x = 0.08
             command.angular.z = -float(self.get_parameter("turn_speed").value)
         else:
-            distance, wall_yaw = wall
+            distance, wall_yaw, _ = wall
             target = float(self.get_parameter("target_wall_distance").value)
             angular = (
                 float(self.get_parameter("heading_gain").value) * wall_yaw
