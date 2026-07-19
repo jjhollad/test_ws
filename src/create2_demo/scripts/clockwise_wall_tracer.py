@@ -57,6 +57,7 @@ class ClockwiseWallTracer(Node):
         self._progress_time = self.get_clock().now()
         self._last_wall_time = None
         self._state = "search"
+        self._returning_home = False
         self._backup_start = None
         self._trace_path = Path()
         self._trace_path.header.frame_id = "odom"
@@ -70,7 +71,17 @@ class ClockwiseWallTracer(Node):
         )
         self.create_subscription(Odometry, "/odom", self._odom_callback, 10)
         self.create_subscription(OccupancyGrid, "/map", self._map_callback, 10)
+        self.create_subscription(
+            Bool, "/mapping_return_home", self._return_home_callback, 10
+        )
         self.create_timer(0.10, self._control)
+
+    def _return_home_callback(self, message):
+        self._returning_home = message.data
+        if self._returning_home:
+            self._set_state("yield_for_return_home")
+            self._cmd.publish(Twist())
+            self._active.publish(Bool(data=False))
 
     def _scan_callback(self, message):
         self._scan = message
@@ -193,6 +204,10 @@ class ClockwiseWallTracer(Node):
                 >= float(self.get_parameter("progress_timeout").value))
 
     def _control(self):
+        if self._returning_home:
+            self._cmd.publish(Twist())
+            self._active.publish(Bool(data=False))
+            return
         if self._scan is None:
             return
         now = self.get_clock().now()

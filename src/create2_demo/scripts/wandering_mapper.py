@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from geometry_msgs.msg import PoseStamped
 from nav2_msgs.action import BackUp, NavigateThroughPoses
 from nav_msgs.msg import OccupancyGrid, Path
@@ -89,11 +90,16 @@ class WanderingMapper(Node):
         self._has_target = False
         self._blacklist: List[Tuple[float, float]] = []
         self._empty_cycles = 0
+        self._origin = None
+        self._returning_home = False
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
         self._action = ActionClient(self, NavigateThroughPoses, "navigate_through_poses")
         self._backup_action = ActionClient(self, BackUp, "backup")
         self._path_pub = self.create_publisher(Path, "wandering_path", qos)
+        self._return_home_pub = self.create_publisher(
+            Bool, "/mapping_return_home", 10
+        )
         self.create_subscription(
             OccupancyGrid, str(self.get_parameter("map_topic").value),
             self._map_callback, qos,
@@ -594,6 +600,11 @@ class WanderingMapper(Node):
         if world is None:
             return
         robot_x, robot_y, robot_yaw = world
+        if self._origin is None:
+            self._origin = (robot_x, robot_y, robot_yaw)
+            self.get_logger().info(
+                f"Recorded mapping origin x={robot_x:.2f}, y={robot_y:.2f}."
+            )
         self._update_stuck_state(robot_x, robot_y)
         observed_robot = self._world_to_grid(self._map, robot_x, robot_y)
         masks = self._masks(self._map, observed_robot)
@@ -769,8 +780,11 @@ class WanderingMapper(Node):
                 throttle_duration_sec=2.0,
             )
             if self._empty_cycles >= required:
-                self.get_logger().info("Mapping complete: no reachable frontiers remain.")
-                self._timer.cancel()
+                self.get_logger().info(
+                    "Mapping complete: no reachable frontiers remain; "
+                    "returning to origin."
+                )
+                self._send_return_home()
             return
         self._empty_cycles = 0
         goal, size, poses, gain, route_length = chosen
@@ -813,6 +827,29 @@ class WanderingMapper(Node):
             feedback_callback=lambda message, route=generation:
                 self._feedback(message, route),
         )
+        future.add_done_callback(
+            lambda result, route=generation: self._goal_response(result, route)
+        )
+
+    def _send_return_home(self):
+        if self._origin is None or self._returning_home:
+            return
+        self._returning_home = True
+        self._return_home_pub.publish(Bool(data=True))
+        pose = PoseStamped()
+        pose.header.frame_id = str(self.get_parameter("map_frame").value)
+        pose.header.stamp = self.get_clock().now().to_msg()
+        pose.pose.position.x = self._origin[0]
+        pose.pose.position.y = self._origin[1]
+        pose.pose.orientation.z = math.sin(self._origin[2] / 2.0)
+        pose.pose.orientation.w = math.cos(self._origin[2] / 2.0)
+        request = NavigateThroughPoses.Goal()
+        request.poses = [pose]
+        self._busy = True
+        self._route_generation += 1
+        generation = self._route_generation
+        self.get_logger().info("Sending final Nav2 route to mapping origin.")
+        future = self._action.send_goal_async(request)
         future.add_done_callback(
             lambda result, route=generation: self._goal_response(result, route)
         )
@@ -890,6 +927,15 @@ class WanderingMapper(Node):
             return
         handle = future.result()
         if handle is None or not handle.accepted:
+            if self._returning_home:
+                self.get_logger().warn(
+                    "Nav2 rejected return-to-origin route; exploration will retry."
+                )
+                self._returning_home = False
+                self._return_home_pub.publish(Bool(data=False))
+                self._empty_cycles = 0
+                self._busy = False
+                return
             self.get_logger().warn("Nav2 rejected route; blacklisting target.")
             self._blacklist.append(self._target)
             self._busy = False
@@ -906,6 +952,22 @@ class WanderingMapper(Node):
             return
         result = future.result()
         self._goal_handle = None
+        if self._returning_home:
+            if result is not None and result.status == 4:
+                self.get_logger().info(
+                    "Origin reached. Mapping mission complete; stopping behaviors."
+                )
+                self._timer.cancel()
+                self.create_timer(0.5, self._shutdown_completed_mission)
+            else:
+                self.get_logger().warn(
+                    "Return-to-origin route failed; exploration will retry."
+                )
+                self._returning_home = False
+                self._return_home_pub.publish(Bool(data=False))
+                self._empty_cycles = 0
+                self._busy = False
+            return
         if self._recovery_requested:
             self._start_backup()
             return
@@ -949,6 +1011,10 @@ class WanderingMapper(Node):
             self._blacklist.append(self._target)
             self._blacklist = self._blacklist[-20:]
         self._busy = False
+
+    def _shutdown_completed_mission(self):
+        if rclpy.ok():
+            rclpy.shutdown()
 
     def _start_backup(self):
         if not self._backup_action.server_is_ready():
@@ -1004,7 +1070,7 @@ def main(args=None):
     node = WanderingMapper()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         if node._goal_handle is not None and rclpy.ok():

@@ -27,6 +27,8 @@ robot when replaying.
   clearing, wall tracing, and OpenCV center-biased wandering mapper;
 - coordinated OpenCV frontier planning and clockwise wall following using the
   tuned 1.05 m offset, 0.28 m/s speed, and `/wall_tracing_active` handoff;
+- automatic mission completion after sustained frontier exhaustion: wall
+  following stops, Nav2 returns to the recorded start pose, and mapping ends;
 - one-click wall-mapping bringup starts the corridor world, RViz, SLAM, Nav2,
   chassis-aware LiDAR filtering, the global planner, and wall following;
 - timestamped rosbag runs with JSON metadata and CSV event markers;
