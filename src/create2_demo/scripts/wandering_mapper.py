@@ -623,6 +623,13 @@ class WanderingMapper(Node):
         return revisited
 
     @staticmethod
+    def _novelty_score(base_score, revisit, unavoidable_revisit, weight):
+        """Penalize only revisit distance for which an alternative exists."""
+        return base_score - weight * max(
+            0.0, revisit - unavoidable_revisit
+        )
+
+    @staticmethod
     def _rolling_horizon(path, resolution, horizon):
         """Return only the next part of a route, for frequent SLAM replans."""
         if horizon <= 0.0 or len(path) < 2:
@@ -802,9 +809,6 @@ class WanderingMapper(Node):
                 revisit_distance = self._route_revisit_distance(
                     raw, visited, self._map.info.resolution
                 )
-                adjusted_score = base_score - float(
-                    self.get_parameter("revisit_weight").value
-                ) * revisit_distance
                 raw = self._rolling_horizon(
                     raw, self._map.info.resolution,
                     float(self.get_parameter("route_horizon").value),
@@ -818,15 +822,32 @@ class WanderingMapper(Node):
                 )
                 if len(poses) >= minimum_poses:
                     viable.append((
-                        adjusted_score, goal, size, poses, gain,
+                        base_score, goal, size, poses, gain,
                         route_length, revisit_distance,
                     ))
             if viable:
+                unavoidable_revisit = min(
+                    candidate[6] for candidate in viable
+                )
+                revisit_weight = float(
+                    self.get_parameter("revisit_weight").value
+                )
+
+                def novelty_score(candidate):
+                    return self._novelty_score(
+                        candidate[0], candidate[6], unavoidable_revisit,
+                        revisit_weight,
+                    )
+
                 _, goal, size, poses, gain, route_length, revisit_distance = max(
-                    viable, key=lambda candidate: candidate[0]
+                    viable, key=novelty_score
+                )
+                avoidable_revisit = max(
+                    0.0, revisit_distance - unavoidable_revisit
                 )
                 chosen = (
-                    goal, size, poses, gain, route_length, revisit_distance
+                    goal, size, poses, gain, route_length, revisit_distance,
+                    avoidable_revisit,
                 )
                 break
         if chosen is None:
@@ -860,7 +881,10 @@ class WanderingMapper(Node):
                 self._send_return_home()
             return
         self._empty_cycles = 0
-        goal, size, poses, gain, route_length, revisit_distance = chosen
+        (
+            goal, size, poses, gain, route_length, revisit_distance,
+            avoidable_revisit,
+        ) = chosen
         preview = Path()
         preview.header.frame_id = str(self.get_parameter("map_frame").value)
         preview.header.stamp = self.get_clock().now().to_msg()
@@ -892,7 +916,8 @@ class WanderingMapper(Node):
         self.get_logger().info(
             f"Exploring {size}-cell frontier ({gain:.1f} m^2 unknown) "
             f"over {route_length:.1f} m using {len(poses)} smooth poses; "
-            f"{revisit_distance:.1f} m overlaps prior travel."
+            f"{revisit_distance:.1f} m overlaps prior travel, "
+            f"{avoidable_revisit:.1f} m is penalized."
         )
         self._route_generation += 1
         generation = self._route_generation

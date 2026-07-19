@@ -36,6 +36,8 @@ robot when replaying.
   following stops, Nav2 returns to the recorded start pose, and mapping ends;
 - novelty-biased global planning that rewards reachable unknown-space gain and
   penalizes candidate route metres overlapping the robot's travel history;
+- unavoidable revisit distance is exempted: with only one feasible route its
+  revisit penalty is zero, and shared overlap among alternatives is not taxed;
 - persistent **Configuration** tab with described sliders for wall geometry,
   wall speed, Nav2 lead-in, LiDAR fitting, and global-planner reward/penalty
   weights; values apply to the next behavior start;
