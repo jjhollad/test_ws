@@ -52,6 +52,8 @@ robot when replaying.
   values apply to the next behavior start;
 - all configuration sliders are explicitly synchronized to the desktop
   settings store when the manager closes and restored on its next launch;
+- every configuration section has its own defaults button so one subsystem can
+  be reset without disturbing tuning values in the other sections;
 - guarded rolling Nav2 route extension, adjustable with **Path extension
   interval**, adds farther frontier poses near the route tail without rapid
   mid-route preemption;

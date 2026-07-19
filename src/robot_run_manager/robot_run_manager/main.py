@@ -667,9 +667,19 @@ class RunManagerWindow(QMainWindow):
             layout.addWidget(description_label, row + 1, 0, 1, 3)
             rows[group_name] += 2
             self._configuration_changed(key, slider.value(), scale, decimals)
+        for group_name, layout in groups.items():
+            section_reset = QPushButton(f'Reset {group_name} defaults')
+            section_reset.setToolTip(
+                f'Restore only the {group_name} sliders to documented defaults.'
+            )
+            section_reset.clicked.connect(
+                lambda _checked=False, section=group_name:
+                self._reset_configuration(section)
+            )
+            layout.addWidget(section_reset, rows[group_name], 0, 1, 3)
         reset = QPushButton('Reset tuning defaults')
         reset.setToolTip('Restore every tuning slider to its documented default.')
-        reset.clicked.connect(self._reset_configuration)
+        reset.clicked.connect(lambda: self._reset_configuration())
         page_layout.addWidget(reset)
         page_layout.addStretch(1)
         scroll = QScrollArea()
@@ -682,11 +692,15 @@ class RunManagerWindow(QMainWindow):
         self.config_value_labels[key].setText(f'{value:.{decimals}f}')
         self.settings.setValue(f'tuning/{key}', value)
 
-    def _reset_configuration(self):
+    def _reset_configuration(self, group_name=None):
         for key, specification in TUNING_VARIABLES.items():
+            if group_name is not None and specification[1] != group_name:
+                continue
             default = specification[4]
             decimals = specification[5]
             self.config_sliders[key].setValue(round(default * 10 ** decimals))
+        label = group_name if group_name is not None else 'all tuning sections'
+        self.statusBar().showMessage(f'Restored defaults: {label}')
 
     def _configuration_value(self, key):
         decimals = TUNING_VARIABLES[key][5]
