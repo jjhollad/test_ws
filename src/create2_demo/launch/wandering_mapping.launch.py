@@ -9,8 +9,8 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     return LaunchDescription([
-        DeclareLaunchArgument("robot_clearance", default_value="0.58"),
-        DeclareLaunchArgument("goal_clearance", default_value="0.62"),
+        DeclareLaunchArgument("robot_clearance", default_value="0.10"),
+        DeclareLaunchArgument("goal_clearance", default_value="0.15"),
         DeclareLaunchArgument("waypoint_spacing", default_value="0.75"),
         DeclareLaunchArgument("minimum_frontier_size", default_value="0.50"),
         DeclareLaunchArgument("minimum_goal_distance", default_value="1.80"),
@@ -18,7 +18,9 @@ def generate_launch_description():
         DeclareLaunchArgument("fallback_goal_distance", default_value="0.80"),
         DeclareLaunchArgument("fallback_route_length", default_value="0.35"),
         DeclareLaunchArgument("route_horizon", default_value="10.00"),
-        DeclareLaunchArgument("planning_period", default_value="0.50"),
+        DeclareLaunchArgument("planning_period", default_value="2.00"),
+        DeclareLaunchArgument("preview_planning_period", default_value="0.50"),
+        DeclareLaunchArgument("preview_maximum_age", default_value="1.25"),
         DeclareLaunchArgument("maximum_route_poses", default_value="40"),
         DeclareLaunchArgument("clearance_weight", default_value="5.0"),
         DeclareLaunchArgument("wall_heading_radius", default_value="1.50"),
@@ -49,6 +51,7 @@ def generate_launch_description():
         DeclareLaunchArgument("stuck_radius", default_value="2.0"),
         DeclareLaunchArgument("stuck_timeout", default_value="120.0"),
         DeclareLaunchArgument("recovery_backup_distance", default_value="2.14"),
+        DeclareLaunchArgument("backup_replan_attempts", default_value="2"),
         Node(
             package="create2_demo",
             executable="wandering_mapper.py",
@@ -66,6 +69,8 @@ def generate_launch_description():
                 "fallback_route_length": LaunchConfiguration("fallback_route_length"),
                 "route_horizon": LaunchConfiguration("route_horizon"),
                 "planning_period": LaunchConfiguration("planning_period"),
+                "preview_planning_period": LaunchConfiguration("preview_planning_period"),
+                "preview_maximum_age": LaunchConfiguration("preview_maximum_age"),
                 "maximum_route_poses": LaunchConfiguration("maximum_route_poses"),
                 "clearance_weight": LaunchConfiguration("clearance_weight"),
                 "wall_heading_radius": LaunchConfiguration("wall_heading_radius"),
@@ -98,6 +103,7 @@ def generate_launch_description():
                 "stuck_radius": LaunchConfiguration("stuck_radius"),
                 "stuck_timeout": LaunchConfiguration("stuck_timeout"),
                 "recovery_backup_distance": LaunchConfiguration("recovery_backup_distance"),
+                "backup_replan_attempts": LaunchConfiguration("backup_replan_attempts"),
             }],
         ),
     ])

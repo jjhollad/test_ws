@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 import rclpy
+from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import Point, PoseArray, PoseStamped, PoseWithCovarianceStamped
 from nav2_msgs.action import FollowWaypoints
 from nav_msgs.msg import OccupancyGrid, Path
@@ -382,9 +383,15 @@ class CoverageCleaner(Node):
         self.get_logger().debug(f'Current cleaning waypoint: {current}')
 
     def _result_callback(self, future):
-        result = future.result().result
+        wrapped_result = future.result()
+        result = wrapped_result.result
         missed = list(result.missed_waypoints)
-        if missed:
+        if wrapped_result.status != GoalStatus.STATUS_SUCCEEDED:
+            self.get_logger().error(
+                'Cleaning route did not complete successfully '
+                f'(action status {wrapped_result.status}, missed waypoints: {missed}).'
+            )
+        elif missed:
             self.get_logger().warn(f'Cleaning finished with missed waypoints: {missed}')
         else:
             self.get_logger().info('Cleaning waypoint route completed.')

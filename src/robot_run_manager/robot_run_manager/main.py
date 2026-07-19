@@ -25,13 +25,18 @@ import subprocess
 import sys
 
 from geometry_msgs.msg import Twist
-from PyQt5.QtCore import QProcess, QSettings, QTimer, Qt
+from std_msgs.msg import String
+from PyQt5.QtCore import QProcess, QProcessEnvironment, QSettings, QTimer, Qt
+from PyQt5.QtGui import QColor, QTextCursor
 from PyQt5.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
+    QDialog,
     QFileDialog,
     QGridLayout,
     QGroupBox,
+    QHBoxLayout,
     QInputDialog,
     QLabel,
     QLineEdit,
@@ -43,10 +48,14 @@ from PyQt5.QtWidgets import (
     QSlider,
     QStatusBar,
     QTabWidget,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 import rclpy
+
+from robot_run_manager.behavior_tree import SupervisorTree
 
 
 ACTION_GROUPS = {
@@ -86,6 +95,7 @@ ACTION_GROUPS = {
         'Upload Code',
         'View Logs',
         'Flag & Open Logs',
+        'Rebuild & Restart Manager',
         'Install Desktop Launcher',
     ],
 }
@@ -128,6 +138,10 @@ ACTION_TOOLTIPS = {
         'Add a timestamped identifier to the log index and open recent logs '
         'in a terminal reader.'
     ),
+    'Rebuild & Restart Manager': (
+        'Save settings, build the complete workspace in a terminal, and '
+        'automatically relaunch this Manager with the new code.'
+    ),
     'Install Desktop Launcher': 'Create or refresh the desktop icon and ROS startup wrapper.',
 }
 
@@ -157,6 +171,7 @@ IMPLEMENTED_ACTIONS = {
     'Upload Code',
     'View Logs',
     'Flag & Open Logs',
+    'Rebuild & Restart Manager',
     'Install Desktop Launcher',
     'Start Wandering Mapper',
     'Stop Wandering Mapper',
@@ -168,17 +183,29 @@ RECORD_TOPICS = [
     '/cmd_vel',
     '/odom',
     '/scan',
+    '/scan_raw',
+    '/scan_clear',
+    '/clock',
     '/tf',
     '/tf_static',
     '/joint_states',
     '/relay_status',
+    '/chassis_contacts',
+    '/front_caster_contacts',
+    '/left_rear_wheel_contacts',
+    '/right_rear_wheel_contacts',
+    '/physical_contact',
+    '/contact_event',
+    '/wall_behavior_state',
+    '/frontier_handoff_requested',
+    '/frontier_navigation_complete',
 ]
 
 TUNING_VARIABLES = {
     'target_wall_distance': (
-        'Wall distance', 'Wall follower', 0.60, 1.50, 1.05, 2,
-        'Desired distance from the robot center to the right wall. Larger '
-        'values leave more chassis clearance.'
+        'Minimum wall clearance', 'Wall follower', 0.10, 1.50, 0.60, 2,
+        'Minimum distance from the closest part of the robot footprint to the '
+        'right wall. Angled front and rear corners are included.'
     ),
     'linear_speed': (
         'Wall speed', 'Wall follower', 0.05, 0.40, 0.28, 2,
@@ -200,14 +227,157 @@ TUNING_VARIABLES = {
     'global_planning_cooldown': (
         'Behavior handoff timeout', 'Behavior coordination',
         5.0, 600.0, 300.0, 1,
-        'Seconds the global planner keeps control after wall following yields '
-        'before the wall behavior may attempt its next qualified takeover.'
+        'Maximum seconds allowed for the OpenCV planner to reach the nearest '
+        'frontier after wall following stalls. Wall following resumes when '
+        'the frontier is reached; this timeout is only the fallback.'
     ),
     'dead_end_priority_multiplier': (
         'Dead-end exit priority', 'Behavior coordination',
         0.0, 3.0, 1.2, 1,
         'Multiplies measured corridor-entry distance to reserve wall-follower '
         'control while turning around and tracing back out. Zero disables it.'
+    ),
+    'heading_gain': (
+        'Wall heading correction', 'Wall tracing', 0.1, 4.0, 1.4, 2,
+        'How strongly the robot turns to become parallel with the fitted wall.'
+    ),
+    'distance_gain': (
+        'Wall distance correction', 'Wall tracing', 0.1, 3.0, 0.9, 2,
+        'How strongly the robot steers toward or away from the target wall offset.'
+    ),
+    'turn_speed': (
+        'Inside-corner turn speed', 'Corner handling', 0.10, 0.80, 0.45, 2,
+        'Counterclockwise angular speed used at blocked inside corners and dead ends.'
+    ),
+    'front_stop_distance': (
+        'Front body clearance', 'Corner handling', 0.10, 2.00, 0.50, 2,
+        'Minimum distance from the closest footprint point to a front wall '
+        'before straight tracing changes into an inside-corner turn.'
+    ),
+    'wall_timeout': (
+        'Lost-wall memory', 'Behavior coordination', 0.2, 8.0, 2.0, 1,
+        'How long the last valid right wall remains trusted before lost-wall search.'
+    ),
+    'wall_fit_max_range': (
+        'Wall fitting range', 'Wall tracing', 2.0, 12.0, 8.0, 1,
+        'Maximum LiDAR range included when fitting a right-side wall.'
+    ),
+    'wall_fit_minimum_span': (
+        'Minimum fitted span', 'Wall tracing', 0.3, 3.0, 0.8, 1,
+        'Shortest supported straight surface accepted as a wall.'
+    ),
+    'outside_corner_loss_margin': (
+        'Right-edge loss margin', 'Corner handling', 0.20, 1.50, 0.65, 2,
+        'Extra distance beyond the target offset that declares the direct-right wall absent.'
+    ),
+    'outside_corner_confirmation_time': (
+        'Corner confirmation time', 'Corner handling', 0.10, 2.00, 0.35, 2,
+        'How long the right wall must remain absent before committing to a corner.'
+    ),
+    'outside_corner_turn_angle': (
+        '90° turn target', 'Corner handling', 1.20, 1.90, 1.57, 2,
+        'Clockwise odometry angle required for the normal outside-corner quarter-turn.'
+    ),
+    'outside_corner_linear_speed': (
+        'Corner arc speed', 'Corner handling', 0.00, 0.20, 0.07, 2,
+        'Forward speed during a clockwise outside-corner arc; zero turns in place.'
+    ),
+    'outside_corner_turn_speed': (
+        'Outside-corner turn speed', 'Corner handling', 0.10, 0.80, 0.38, 2,
+        'Clockwise angular speed during right-corner and wall-reacquisition maneuvers.'
+    ),
+    'outside_corner_timeout': (
+        'Corner maneuver timeout', 'Corner handling', 2.0, 20.0, 8.0, 1,
+        'Maximum time allowed for a corner maneuver before entering reacquisition.'
+    ),
+    'revisited_right_turn_radius': (
+        'Prior-path detection radius', 'Corner handling', 0.3, 3.0, 1.25, 2,
+        'Distance from an older trace that marks an approach as previously traveled.'
+    ),
+    'revisited_right_turn_minimum_age': (
+        'Prior-path minimum age', 'Corner handling', 5.0, 180.0, 20.0, 1,
+        'Trace age required before it can activate right-turn preference.'
+    ),
+    'revisited_right_turn_clearance': (
+        'Open-right body clearance', 'Corner handling', 0.1, 3.0, 0.50, 2,
+        'Required clearance from the closest footprint point before preferring '
+        'a revisited-path right turn.'
+    ),
+    'right_turn_commitment_time': (
+        'Right-turn commitment', 'Corner handling', 0.2, 8.0, 2.0, 1,
+        'Time after a clockwise turn when ordinary inside-left steering is suppressed.'
+    ),
+    'emergency_front_distance': (
+        'Emergency body clearance', 'Corner handling', 0.05, 0.9, 0.15, 2,
+        'Closest footprint-to-wall distance that overrides right-turn '
+        'preference to prevent collision.'
+    ),
+    'handoff_heading_tolerance': (
+        'Handoff heading tolerance', 'Behavior coordination', 0.05, 0.60, 0.17, 2,
+        'Maximum wall-parallel heading error allowed when Nav2 hands off control.'
+    ),
+    'handoff_distance_tolerance': (
+        'Handoff distance tolerance', 'Behavior coordination', 0.05, 0.60, 0.20, 2,
+        'Maximum wall-offset error allowed when Nav2 hands off control.'
+    ),
+    'alignment_settle_time': (
+        'Alignment settle time', 'Behavior coordination', 0.1, 3.0, 0.75, 2,
+        'Stationary time before submitting the fitted straight wall-alignment route.'
+    ),
+    'alignment_escape_clearance': (
+        'Pre-Nav2 escape clearance', 'Behavior coordination',
+        0.10, 0.60, 0.20, 2,
+        'Minimum closest-body wall clearance required before Nav2 alignment. '
+        'Below it, direct control rotates away because Nav2 correctly rejects '
+        'a padded footprint that already overlaps its costmap.'
+    ),
+    'exploration_evaluation_period': (
+        'Wall discovery evaluation', 'Behavior coordination', 5.0, 120.0, 25.0, 1,
+        'Time window used to judge whether wall following is still discovering map area.'
+    ),
+    'minimum_free_area_gain': (
+        'Minimum wall discovery gain', 'Behavior coordination', 0.0, 10.0, 1.5, 1,
+        'New free square metres required during a wall-tracing evaluation window.'
+    ),
+    'loop_return_radius': (
+        'Repeated-location radius', 'Behavior coordination', 0.2, 3.0, 1.0, 1,
+        'Distance that counts as returning to an already traced location.'
+    ),
+    'loop_minimum_age': (
+        'Repeated-location minimum age', 'Behavior coordination', 5.0, 180.0, 30.0, 1,
+        'Minimum age of a prior trace point before it can trigger a planner handoff.'
+    ),
+    'retrace_radius': (
+        'Traveled-path match radius', 'Behavior coordination',
+        0.10, 2.00, 0.60, 2,
+        'Maximum distance from an older recorded track for a current track '
+        'sample to count as previously traveled.'
+    ),
+    'retrace_minimum_age': (
+        'Traveled-path minimum age', 'Behavior coordination',
+        5.0, 300.0, 20.0, 1,
+        'How old a track sample must be before it can prove that the robot is '
+        'repeating a route rather than extending its current pass.'
+    ),
+    'retrace_minimum_length': (
+        'Traveled-path check length', 'Behavior coordination',
+        0.5, 10.0, 2.0, 1,
+        'Length of the robot current track compared with older travel. Larger '
+        'values avoid switching at a single crossing.'
+    ),
+    'retrace_overlap_ratio': (
+        'Traveled-path overlap', 'Behavior coordination',
+        0.10, 1.00, 0.70, 2,
+        'Fraction of current-track samples that must match older travel before '
+        'requesting the nearest-frontier global path.'
+    ),
+    'dead_end_minimum_depth': (
+        'Minimum dead-end depth', 'Corner handling', 0.2, 5.0, 1.0, 1,
+        'Minimum corridor travel before dead-end exit priority can activate.'
+    ),
+    'dead_end_side_max_distance': (
+        'Dead-end side-wall range', 'Corner handling', 1.0, 8.0, 4.0, 1,
+        'Maximum side range used to confirm that the blocked front is a corridor dead end.'
     ),
     'information_weight': (
         'Unknown-space reward', 'Global frontier planner', 0.0, 10.0, 4.0, 1,
@@ -270,12 +440,14 @@ TUNING_VARIABLES = {
         'new free map before switching to a more productive frontier.'
     ),
     'robot_clearance': (
-        'Robot route clearance', 'Path geometry', 0.30, 1.20, 0.58, 2,
-        'Minimum obstacle clearance required for every traversable route cell.'
+        'Robot route body clearance', 'Path geometry', 0.05, 1.20, 0.10, 2,
+        'Minimum obstacle distance from any outside footprint point along '
+        'OpenCV routes. The robot radius is added automatically.'
     ),
     'goal_clearance': (
-        'Frontier goal clearance', 'Path geometry', 0.30, 1.50, 0.62, 2,
-        'Minimum obstacle clearance required at a selected frontier goal.'
+        'Frontier goal body clearance', 'Path geometry', 0.05, 1.50, 0.15, 2,
+        'Minimum obstacle distance from any outside footprint point at a '
+        'frontier goal. The robot radius is added automatically.'
     ),
     'waypoint_spacing': (
         'Waypoint spacing', 'Path geometry', 0.20, 2.00, 0.75, 2,
@@ -307,8 +479,20 @@ TUNING_VARIABLES = {
     ),
     'planning_period': (
         'Planner evaluation period', 'Replanning and recovery',
-        0.20, 5.00, 0.50, 2,
+        0.20, 5.00, 2.00, 2,
         'Seconds between frontier evaluations while the planner is available.'
+    ),
+    'preview_planning_period': (
+        'Prepared-route refresh', 'Replanning and recovery',
+        0.20, 3.00, 0.50, 2,
+        'Seconds between preemptive global-route calculations while wall '
+        'following owns motion. Lower values make handoff routes fresher.'
+    ),
+    'preview_maximum_age': (
+        'Prepared-route maximum age', 'Replanning and recovery',
+        0.30, 5.00, 1.25, 2,
+        'Oldest cached global route that may be dispatched immediately when '
+        'wall following yields; older routes are recalculated.'
     ),
     'maximum_route_poses': (
         'Maximum route poses', 'Path geometry', 5, 100, 40, 0,
@@ -355,7 +539,14 @@ TUNING_VARIABLES = {
     ),
     'minimum_corridor_width': (
         'Minimum corridor width', 'Corridor planning', 0.8, 5.0, 1.2, 1,
-        'Reject inferred corridors narrower than this safe width.'
+        'Reject inferred corridors narrower than this safe width. The wall '
+        'follower also places a virtual wall across narrower entrances.'
+    ),
+    'narrow_corridor_confirmation_time': (
+        'Narrow-corridor confirmation', 'Corridor planning',
+        0.0, 2.0, 0.3, 2,
+        'Time that two adjacent LiDAR width measurements must remain below '
+        'the minimum before the entrance becomes a virtual wall.'
     ),
     'significant_progress': (
         'Progress segment distance', 'Replanning and recovery',
@@ -379,10 +570,17 @@ TUNING_VARIABLES = {
     'recovery_backup_distance': (
         'Recovery backup distance', 'Replanning and recovery',
         0.2, 4.0, 2.14, 2,
-        'Collision-checked Nav2 backup distance after a confirmed physical stall.'
+        'Collision-checked Nav2 backup distance used only as the final '
+        'recovery after contact, a prolonged stall, and failed replans.'
+    ),
+    'backup_replan_attempts': (
+        'Replans before backup', 'Replanning and recovery',
+        1, 8, 2, 0,
+        'Number of failed least-explored global recovery routes required '
+        'before physical-contact backup is allowed.'
     ),
     'slam_map_update_interval': (
-        'Map refresh interval', 'SLAM mapping', 0.20, 5.00, 0.50, 2,
+        'Map refresh interval', 'SLAM mapping', 0.20, 5.00, 1.00, 2,
         'Seconds between published occupancy-map updates; lower is faster but uses more CPU.'
     ),
     'slam_resolution': (
@@ -390,7 +588,7 @@ TUNING_VARIABLES = {
         'Map cell size in metres; smaller cells look sharper and cost more computation.'
     ),
     'slam_minimum_travel_distance': (
-        'Scan travel distance', 'SLAM mapping', 0.05, 1.00, 0.15, 2,
+        'Scan travel distance', 'SLAM mapping', 0.05, 1.00, 0.30, 2,
         'Minimum robot translation before SLAM processes another scan.'
     ),
     'slam_minimum_travel_heading': (
@@ -398,15 +596,15 @@ TUNING_VARIABLES = {
         'Minimum rotation in radians before SLAM processes another scan.'
     ),
     'slam_scan_buffer_size': (
-        'Scan buffer size', 'SLAM mapping', 5, 50, 15, 0,
+        'Scan buffer size', 'SLAM mapping', 5, 50, 10, 0,
         'Recent scans retained for matching; larger improves context but costs memory and CPU.'
     ),
     'slam_scan_buffer_distance': (
-        'Scan buffer distance', 'SLAM mapping', 3.0, 20.0, 12.0, 1,
+        'Scan buffer distance', 'SLAM mapping', 3.0, 20.0, 8.0, 1,
         'Maximum travel distance represented by scans retained in the matching buffer.'
     ),
     'slam_link_match_response': (
-        'Fine link-match threshold', 'SLAM mapping', 0.05, 0.80, 0.15, 2,
+        'Fine link-match threshold', 'SLAM mapping', 0.05, 0.80, 0.20, 2,
         'Minimum fine scan-match confidence; lower accepts more matches and more risk.'
     ),
     'slam_link_scan_distance': (
@@ -414,14 +612,30 @@ TUNING_VARIABLES = {
         'Maximum distance between scans considered for local pose-graph links.'
     ),
     'slam_loop_search_distance': (
-        'Loop search distance', 'SLAM mapping', 1.0, 12.0, 4.0, 1,
+        'Loop search distance', 'SLAM mapping', 1.0, 12.0, 3.0, 1,
         'Radius searched for loop closures; larger corrects longer loops at greater cost.'
     ),
-    'simulation_speed': (
-        'Simulation speed multiplier', 'Simulation clock', 0.1, 3.0, 1.0, 1,
-        'Target Gazebo clock rate relative to real time. Faster values require '
-        'more CPU and may run below target when the computer cannot keep up.'
-    ),
+}
+
+LOCALIZATION_PROFILE_VERSION = 3
+LOCALIZATION_PROFILE_VALUES = {
+    'planning_period': 2.0,
+    'slam_map_update_interval': 1.0,
+    'slam_minimum_travel_distance': 0.30,
+    'slam_scan_buffer_size': 10,
+    'slam_scan_buffer_distance': 8.0,
+    'slam_link_match_response': 0.20,
+    'slam_loop_search_distance': 3.0,
+    # Version 2 changes these values from base-origin distance to actual
+    # outside-footprint clearance; migrate the old radius-like defaults.
+    'robot_clearance': 0.10,
+    'goal_clearance': 0.15,
+    # Version 3 preserves the physical gaps of settings that formerly meant
+    # LiDAR/base-origin range but now correctly mean outside-body clearance.
+    'target_wall_distance': 0.60,
+    'front_stop_distance': 0.50,
+    'revisited_right_turn_clearance': 0.50,
+    'emergency_front_distance': 0.15,
 }
 
 
@@ -457,17 +671,51 @@ class RunManagerWindow(QMainWindow):
         self.close_pending = False
         self.combined_wall_mapping = False
         self.settings = QSettings('test_ws', 'Robot Run Manager')
+        self._apply_settings_migrations()
         self.config_sliders = {}
         self.config_value_labels = {}
+        self.wall_behavior_state = 'inactive'
+        self.wall_state_subscription = ros_node.create_subscription(
+            String, '/wall_behavior_state', self._wall_state_changed, 10
+        )
 
         self.stop_timer = QTimer(self)
         self.stop_timer.setInterval(50)
         self.stop_timer.timeout.connect(self._publish_stop)
 
+        self.supervisor_tree = SupervisorTree(
+            ros_node, self._supervisor_state
+        )
+        self.behavior_tree_items = {}
+
         self.setWindowTitle('Robot Run Manager')
         self.resize(950, 760)
         self._build_ui()
+        self.ros_spin_timer = QTimer(self)
+        self.ros_spin_timer.setInterval(20)
+        self.ros_spin_timer.timeout.connect(self._spin_ros_once)
+        self.ros_spin_timer.start()
+        self.behavior_tree_timer = QTimer(self)
+        self.behavior_tree_timer.setInterval(500)
+        self.behavior_tree_timer.timeout.connect(self._tick_behavior_tree)
+        self.behavior_tree_timer.start()
+        self._tick_behavior_tree()
         self._update_controls()
+
+    def _apply_settings_migrations(self):
+        """Apply one-time safer defaults to existing desktop settings."""
+        current = self.settings.value(
+            'configuration/localization_profile_version', 0, type=int
+        )
+        if current >= LOCALIZATION_PROFILE_VERSION:
+            return
+        for key, value in LOCALIZATION_PROFILE_VALUES.items():
+            self.settings.setValue(f'tuning/{key}', value)
+        self.settings.setValue(
+            'configuration/localization_profile_version',
+            LOCALIZATION_PROFILE_VERSION,
+        )
+        self.settings.sync()
 
     def _build_ui(self):
         root = QWidget()
@@ -483,18 +731,48 @@ class RunManagerWindow(QMainWindow):
         role_layout = QGridLayout()
         role_layout.addWidget(QLabel('This machine:'), 0, 0)
         self.role_selector = QComboBox()
-        self.role_selector.addItems(['Real robot', 'Development / simulation'])
+        self.role_selector.addItems([
+            'Select machine...', 'Real robot', 'Development / simulation'
+        ])
         self.role_selector.currentIndexChanged.connect(self._role_changed)
         role_layout.addWidget(self.role_selector, 0, 1)
+        self.gazebo_gui_switch = QCheckBox('Show Gazebo GUI')
+        self.gazebo_gui_switch.setToolTip(
+            'Checked: open the Gazebo 3D window with the simulation. '
+            'Unchecked: run only the Gazebo server to reduce CPU/GPU use.'
+        )
+        self.gazebo_gui_switch.setChecked(
+            self.settings.value('simulation/show_gazebo_gui', True, type=bool)
+        )
+        self.gazebo_gui_switch.toggled.connect(self._gazebo_gui_changed)
+        role_layout.addWidget(self.gazebo_gui_switch, 0, 2)
+        role_layout.addWidget(QLabel('Gazebo FPS:'), 0, 3)
+        self.gazebo_fps_selector = QComboBox()
+        self.gazebo_fps_selector.addItems(['10', '15', '20', '30', '60'])
+        saved_fps = str(
+            self.settings.value('simulation/gazebo_gui_fps', 15, type=int)
+        )
+        if saved_fps not in {'10', '15', '20', '30', '60'}:
+            saved_fps = '15'
+        self.gazebo_fps_selector.setCurrentText(saved_fps)
+        self.gazebo_fps_selector.setToolTip(
+            'Maximum Gazebo window render rate. This does not change physics, '
+            'sensor timestamps, or simulation clock speed.'
+        )
+        self.gazebo_fps_selector.currentTextChanged.connect(
+            self._gazebo_fps_changed
+        )
+        role_layout.addWidget(self.gazebo_fps_selector, 0, 4)
         self.process_label = QLabel('Managed processes: none')
-        role_layout.addWidget(self.process_label, 0, 2)
-        role_layout.setColumnStretch(2, 1)
+        role_layout.addWidget(self.process_label, 0, 5)
+        role_layout.setColumnStretch(5, 1)
         root_layout.addLayout(role_layout)
 
         run_layout = QGridLayout()
         run_layout.addWidget(QLabel('Operator:'), 0, 0)
         self.operator_input = QLineEdit()
         self.operator_input.setPlaceholderText('name or initials')
+        self.operator_input.textChanged.connect(self._update_controls)
         run_layout.addWidget(self.operator_input, 0, 1)
         run_layout.addWidget(QLabel('Scenario:'), 0, 2)
         self.scenario_input = QLineEdit()
@@ -609,11 +887,15 @@ class RunManagerWindow(QMainWindow):
         self.buttons['Upload Code'].clicked.connect(self.upload_code)
         self.buttons['View Logs'].clicked.connect(self.view_logs)
         self.buttons['Flag & Open Logs'].clicked.connect(self.flag_and_open_logs)
+        self.buttons['Rebuild & Restart Manager'].clicked.connect(
+            self.rebuild_and_restart_manager
+        )
         self.buttons['Install Desktop Launcher'].clicked.connect(
             self.install_desktop_launcher
         )
 
         tabs.addTab(self._build_configuration_tab(), 'Configuration')
+        tabs.addTab(self._build_behavior_tree_tab(), 'Behavior Tree')
         self.setCentralWidget(tabs)
         status = QStatusBar()
         status.showMessage('Ready for preflight')
@@ -687,6 +969,179 @@ class RunManagerWindow(QMainWindow):
         scroll.setWidget(page)
         return scroll
 
+    def _build_behavior_tree_tab(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        explanation = QLabel(
+            'Live navigation supervisor and behavior editor. Select a leaf to '
+            'see why it runs and tune its persistent settings. Changes apply '
+            'the next time the wall follower starts.'
+        )
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+        self.behavior_tree_view = QTreeWidget()
+        self.behavior_tree_view.setColumnCount(3)
+        self.behavior_tree_view.setHeaderLabels(
+            ['Behavior', 'Status', 'Plain-language detail']
+        )
+        self.behavior_tree_view.setAlternatingRowColors(True)
+        self.behavior_tree_behaviors = {}
+        layout.addWidget(self.behavior_tree_view, 1)
+
+        def add_behavior(behavior, parent=None):
+            item = QTreeWidgetItem([
+                behavior.name, behavior.status.value, behavior.feedback_message
+            ])
+            if parent is None:
+                self.behavior_tree_view.addTopLevelItem(item)
+            else:
+                parent.addChild(item)
+            self.behavior_tree_items[behavior.id] = item
+            self.behavior_tree_behaviors[id(item)] = behavior
+            for child in behavior.children:
+                add_behavior(child, item)
+
+        add_behavior(self.supervisor_tree.root)
+        self.behavior_tree_view.expandAll()
+        self.behavior_tree_view.resizeColumnToContents(0)
+        self.behavior_tree_editor = QGroupBox('Selected behavior settings')
+        self.behavior_tree_editor_layout = QGridLayout(self.behavior_tree_editor)
+        editor_scroll = QScrollArea()
+        editor_scroll.setWidgetResizable(True)
+        editor_scroll.setMinimumHeight(300)
+        editor_scroll.setWidget(self.behavior_tree_editor)
+        layout.addWidget(editor_scroll)
+        self.behavior_tree_view.currentItemChanged.connect(
+            self._behavior_tree_selection_changed
+        )
+        if self.behavior_tree_view.topLevelItemCount():
+            self.behavior_tree_view.setCurrentItem(
+                self.behavior_tree_view.topLevelItem(0)
+            )
+        open_viewer = QPushButton('Open py_trees ROS Viewer')
+        open_viewer.setToolTip(
+            'Open the official external viewer and connect to this tree snapshot stream.'
+        )
+        open_viewer.clicked.connect(self.open_behavior_tree_viewer)
+        layout.addWidget(open_viewer)
+        return page
+
+    def _behavior_tree_selection_changed(self, item, _previous=None):
+        """Build a synchronized editor for the selected behaviour leaf."""
+        layout = self.behavior_tree_editor_layout
+        while layout.count():
+            child = layout.takeAt(0)
+            if child.widget() is not None:
+                child.widget().hide()
+                child.widget().deleteLater()
+        behavior = self.behavior_tree_behaviors.get(id(item)) if item else None
+        if behavior is None:
+            return
+        detail = QLabel(getattr(behavior, 'detail', '') or
+                        'Supervisory branch; select one of its leaves to tune it.')
+        detail.setWordWrap(True)
+        layout.addWidget(detail, 0, 0, 1, 3)
+        keys = tuple(getattr(behavior, 'setting_keys', ()))
+        for row, key in enumerate(keys, 1):
+            name, _group, minimum, maximum, _default, decimals, description = (
+                TUNING_VARIABLES[key]
+            )
+            scale = 10 ** decimals
+            editor = QSlider(Qt.Horizontal)
+            editor.setRange(round(minimum * scale), round(maximum * scale))
+            editor.setValue(self.config_sliders[key].value())
+            editor.setToolTip(description)
+            value = QLabel()
+            value.setMinimumWidth(55)
+            value.setText(f'{editor.value() / scale:.{decimals}f}')
+            editor.valueChanged.connect(
+                lambda raw, source=self.config_sliders[key], label=value,
+                factor=scale, digits=decimals: (
+                    source.setValue(raw),
+                    label.setText(f'{raw / factor:.{digits}f}')
+                )
+            )
+            self.config_sliders[key].valueChanged.connect(editor.setValue)
+            control_row = row * 2 - 1
+            description_label = QLabel(
+                f'{description} Allowed range: {minimum:.{decimals}f}–'
+                f'{maximum:.{decimals}f}; documented default: '
+                f'{_default:.{decimals}f}. The saved value is used when the '
+                'wall follower is next started.'
+            )
+            description_label.setWordWrap(True)
+            description_label.setStyleSheet('color: #555; margin-bottom: 4px;')
+            layout.addWidget(QLabel(name), control_row, 0)
+            layout.addWidget(editor, control_row, 1)
+            layout.addWidget(value, control_row, 2)
+            layout.addWidget(
+                description_label, control_row + 1, 0, 1, 3
+            )
+        if not keys:
+            layout.addWidget(QLabel('This branch has no direct tuning values.'), 1, 0, 1, 3)
+        else:
+            reset = QPushButton('Reset this behavior to defaults')
+            reset.clicked.connect(
+                lambda _checked=False, selected=keys:
+                self._reset_behavior_settings(selected)
+            )
+            layout.addWidget(reset, len(keys) * 2 + 1, 0, 1, 3)
+
+    def _reset_behavior_settings(self, keys):
+        for key in keys:
+            default = TUNING_VARIABLES[key][4]
+            decimals = TUNING_VARIABLES[key][5]
+            self.config_sliders[key].setValue(round(default * 10 ** decimals))
+        self.statusBar().showMessage('Restored defaults for selected behavior')
+
+    def _supervisor_state(self):
+        node_names = set(self.ros_node.get_node_names())
+        navigation_active = any([
+            self._is_running('simulation'),
+            self._is_running('mapping'),
+        ])
+        return {
+            'always': True,
+            'emergency': self.stop_timer.isActive(),
+            'system_ready': self.preflight_passed,
+            'navigation_active': navigation_active,
+            'localization': navigation_active and '/slam_toolbox' in node_names,
+            'return_home': False,
+            'dead_end_exit': False,
+            'wall_following': self._is_running('wall_follower'),
+            'wall_state': self.wall_behavior_state,
+            'frontier_navigation': self._is_running('wandering_mapper'),
+        }
+
+    def _wall_state_changed(self, message):
+        self.wall_behavior_state = message.data
+
+    def _spin_ros_once(self):
+        rclpy.spin_once(self.ros_node, timeout_sec=0.0)
+
+    def _tick_behavior_tree(self):
+        self.supervisor_tree.tick()
+        colors = {
+            'SUCCESS': QColor('#c8e6c9'),
+            'RUNNING': QColor('#fff3b0'),
+            'FAILURE': QColor('#ffcdd2'),
+            'INVALID': QColor('#eeeeee'),
+        }
+        for behavior in self.supervisor_tree.root.iterate():
+            item = self.behavior_tree_items.get(behavior.id)
+            if item is None:
+                continue
+            status = behavior.status.value
+            item.setText(1, status)
+            item.setText(2, behavior.feedback_message or '')
+            for column in range(3):
+                item.setBackground(column, colors[status])
+
+    def open_behavior_tree_viewer(self):
+        self._start_process(
+            'behavior_tree_viewer', 'py-trees-tree-viewer', []
+        )
+
     def _configuration_changed(self, key, slider_value, scale, decimals):
         value = slider_value / scale
         self.config_value_labels[key].setText(f'{value:.{decimals}f}')
@@ -714,6 +1169,12 @@ class RunManagerWindow(QMainWindow):
             self.settings.setValue(
                 f'tuning/{key}', self._configuration_value(key)
             )
+        self.settings.setValue(
+            'simulation/show_gazebo_gui', self.gazebo_gui_switch.isChecked()
+        )
+        self.settings.setValue(
+            'simulation/gazebo_gui_fps', self.gazebo_fps_selector.currentText()
+        )
         self.settings.sync()
         if self.settings.status() != QSettings.NoError:
             self.output.appendPlainText(
@@ -728,6 +1189,7 @@ class RunManagerWindow(QMainWindow):
             'minimum_frontier_size', 'minimum_goal_distance',
             'minimum_route_length', 'fallback_goal_distance',
             'fallback_route_length', 'route_horizon', 'planning_period',
+            'preview_planning_period', 'preview_maximum_age',
             'maximum_route_poses', 'wall_heading_radius',
             'rolling_replan_poses', 'rolling_replan_distance',
             'information_weight', 'frontier_bonus', 'revisit_weight',
@@ -742,14 +1204,18 @@ class RunManagerWindow(QMainWindow):
             'progress_timeout', 'significant_progress',
             'discovery_progress_timeout', 'minimum_discovery_area_gain',
             'stuck_radius', 'stuck_timeout', 'recovery_backup_distance',
+            'backup_replan_attempts',
         )
         arguments = [
             f'{key}:={self._configuration_value(key)}' for key in keys
         ]
-        arguments.append(
-            'wall_transit_distance:='
-            f'{self._configuration_value("target_wall_distance")}'
+        # The OpenCV map stores obstacle distance from the base origin. For a
+        # parallel right wall, add the 0.45 m right footprint extent so this
+        # preference uses the same nearest-body clearance as wall following.
+        wall_transit_distance = (
+            float(self._configuration_value("target_wall_distance")) + 0.45
         )
+        arguments.append(f'wall_transit_distance:={wall_transit_distance}')
         return arguments
 
     def _slam_launch_arguments(self):
@@ -762,15 +1228,95 @@ class RunManagerWindow(QMainWindow):
         )
         return [f'{key}:={self._configuration_value(key)}' for key in keys]
 
-    def _simulation_launch_arguments(self):
-        multiplier = self._configuration_value('simulation_speed')
-        update_rate = round(1000.0 * multiplier)
-        return [f'sim_real_time_update_rate:={update_rate}']
-
     def _role_changed(self):
         self.preflight_passed = False
         self.statusBar().showMessage('Role changed — run preflight again')
         self._update_controls()
+
+    def _machine_selected(self):
+        return self.role_selector.currentIndex() in (1, 2)
+
+    def _is_real_robot_role(self):
+        return self.role_selector.currentIndex() == 1
+
+    def _set_workflow_styles(
+        self, real_robot, running, recording, mapping, simulation,
+        replaying, wandering, wall_following,
+    ):
+        """Highlight the next action and make active stop actions conspicuous."""
+        green = (
+            'background: #2e7d32; color: white; font-weight: bold; '
+            'border: 2px solid #1b5e20; padding: 5px;'
+        )
+        green_input = (
+            'background: #e8f5e9; border: 2px solid #2e7d32; padding: 3px;'
+        )
+        red = (
+            'background: #c62828; color: white; font-weight: bold; '
+            'border: 2px solid #8e0000; padding: 5px;'
+        )
+        for button in self.buttons.values():
+            button.setStyleSheet('')
+        self.buttons['Kill ROS Processes'].setStyleSheet(
+            'background: #b00020; color: white; font-weight: bold;'
+        )
+        self.role_selector.setStyleSheet('')
+        self.operator_input.setStyleSheet('')
+
+        operator_ready = bool(self.operator_input.text().strip())
+        if not self._machine_selected():
+            self.role_selector.setStyleSheet(green_input)
+        elif not self.preflight_passed:
+            self.buttons['Preflight Check'].setStyleSheet(green)
+        elif not operator_ready:
+            self.operator_input.setStyleSheet(green_input)
+        elif not any((running, mapping, simulation, replaying)):
+            primary = 'Start Robot' if real_robot else 'Start Simulation'
+            if self.buttons[primary].isEnabled():
+                self.buttons[primary].setStyleSheet(green)
+            if real_robot and self.buttons['Start Mapping'].isEnabled():
+                self.buttons['Start Mapping'].setStyleSheet(green)
+        elif (mapping or simulation) and not wandering and not wall_following:
+            for action in ('Start Wall Follower', 'Start Wandering Mapper'):
+                if self.buttons[action].isEnabled():
+                    self.buttons[action].setStyleSheet(green)
+
+        stop_states = {
+            'Stop Robot': running,
+            'Stop Recording': recording,
+            'Stop Mapping': mapping,
+            'Stop Simulation': simulation or replaying,
+            'Stop Wandering Mapper': wandering,
+            'Stop Wall Follower': wall_following,
+        }
+        for action, active in stop_states.items():
+            if active:
+                self.buttons[action].setStyleSheet(red)
+
+    def _gazebo_gui_changed(self, show_gui):
+        """Persist and apply the Gazebo client preference."""
+        self.settings.setValue('simulation/show_gazebo_gui', show_gui)
+        self.settings.sync()
+        if self._is_running('simulation'):
+            if show_gui:
+                self.open_gazebo()
+            else:
+                self._request_stop('gazebo_client')
+                self.statusBar().showMessage(
+                    'Gazebo GUI closed; simulation continues headless'
+                )
+        self._update_controls()
+
+    def _gazebo_fps_changed(self, fps):
+        """Persist the client-only Gazebo render limit."""
+        self.settings.setValue('simulation/gazebo_gui_fps', int(fps))
+        self.settings.sync()
+        if self._is_running('gazebo_client'):
+            self._request_stop('gazebo_client')
+            QTimer.singleShot(750, self.open_gazebo)
+            self.statusBar().showMessage(
+                f'Restarting Gazebo GUI with a {fps} FPS limit'
+            )
 
     def _update_controls(self):
         running = self._is_running('robot')
@@ -784,18 +1330,24 @@ class RunManagerWindow(QMainWindow):
         gazebo_client = self._is_running('gazebo_client')
         validating = self._is_running('validation')
         transferring = self._is_running('transfer')
-        real_robot = self.role_selector.currentIndex() == 0
+        machine_selected = self._machine_selected()
+        real_robot = self._is_real_robot_role()
         for action, button in self.buttons.items():
             button.setEnabled(action in IMPLEMENTED_ACTIONS)
             if action not in IMPLEMENTED_ACTIONS:
                 button.setToolTip('Planned for a later step')
+        self.buttons['Preflight Check'].setEnabled(machine_selected)
         self.buttons['Start Robot'].setEnabled(
             real_robot and self.preflight_passed and not running and not mapping
         )
         self.buttons['Stop Robot'].setEnabled(running)
         self.buttons['Emergency Stop'].setEnabled(True)
         self.buttons['Kill ROS Processes'].setEnabled(True)
-        self.buttons['Open Gazebo'].setEnabled(simulation and not gazebo_client)
+        self.buttons['Open Gazebo'].setEnabled(
+            simulation
+            and self.gazebo_gui_switch.isChecked()
+            and not gazebo_client
+        )
         self.buttons['Start Recording'].setEnabled(
             self.preflight_passed and not recording
         )
@@ -850,6 +1402,9 @@ class RunManagerWindow(QMainWindow):
         self.buttons['Transfer Run'].setEnabled(
             not recording and not transferring
         )
+        self.buttons['Rebuild & Restart Manager'].setEnabled(
+            not any(self._is_running(name) for name in self.processes)
+        )
         self.buttons['Download Code'].setEnabled(not any([
             running, recording, mapping, simulation, replaying,
         ]))
@@ -890,6 +1445,10 @@ class RunManagerWindow(QMainWindow):
             f'Managed processes: {", ".join(active)} running' if active
             else 'Managed processes: none'
         )
+        self._set_workflow_styles(
+            real_robot, running, recording, mapping, simulation, replaying,
+            wandering, wall_following,
+        )
 
     def _is_running(self, name):
         process = self.processes.get(name)
@@ -909,7 +1468,10 @@ class RunManagerWindow(QMainWindow):
             return False
 
     def run_preflight(self):
-        real_robot = self.role_selector.currentIndex() == 0
+        if not self._machine_selected():
+            self.statusBar().showMessage('Select this machine before preflight')
+            return
+        real_robot = self._is_real_robot_role()
         checks = [
             ('ROS 2 command', shutil.which('ros2') is not None, True),
             ('Workspace', self.workspace.is_dir(), True),
@@ -969,10 +1531,15 @@ class RunManagerWindow(QMainWindow):
         self.statusBar().showMessage(f'Preflight {result}')
         self._update_controls()
 
-    def _start_process(self, name, program, arguments):
+    def _start_process(self, name, program, arguments, environment=None):
         if self._is_running(name):
             return
         process = QProcess(self)
+        if environment:
+            process_environment = QProcessEnvironment.systemEnvironment()
+            for key, value in environment.items():
+                process_environment.insert(key, str(value))
+            process.setProcessEnvironment(process_environment)
         process.setWorkingDirectory(str(self.workspace))
         process.setProcessChannelMode(QProcess.MergedChannels)
         process.readyReadStandardOutput.connect(
@@ -1025,7 +1592,7 @@ class RunManagerWindow(QMainWindow):
         self._update_controls()
 
     def start_robot(self):
-        if not self.preflight_passed or self.role_selector.currentIndex() != 0:
+        if not self.preflight_passed or not self._is_real_robot_role():
             return
         answer = QMessageBox.warning(
             self,
@@ -1068,7 +1635,7 @@ class RunManagerWindow(QMainWindow):
     def start_mapping(self):
         if (
             not self.preflight_passed
-            or self.role_selector.currentIndex() != 0
+            or not self._is_real_robot_role()
             or self._is_running('robot')
             or self._is_running('mapping')
         ):
@@ -1166,7 +1733,7 @@ class RunManagerWindow(QMainWindow):
             )
         ):
             return
-        real_robot = self.role_selector.currentIndex() == 0
+        real_robot = self._is_real_robot_role()
         warning = (
             'The real robot will autonomously navigate toward unexplored map '
             'frontiers. Keep it supervised in a closed, clear area with the '
@@ -1204,7 +1771,7 @@ class RunManagerWindow(QMainWindow):
     def start_wall_follower(self):
         if (
             not self.preflight_passed
-            or self.role_selector.currentIndex() == 0
+            or self._is_real_robot_role()
             or self._is_running('robot')
             or self._is_running('mapping')
             or self._is_running('wall_follower')
@@ -1241,6 +1808,36 @@ class RunManagerWindow(QMainWindow):
                 ],
             )
         self.combined_wall_mapping = True
+        wall_keys = (
+            'target_wall_distance', 'linear_speed', 'heading_gain',
+            'distance_gain', 'turn_speed', 'front_stop_distance',
+            'wall_timeout', 'nav2_wall_follow_distance',
+            'wall_fit_inlier_distance', 'wall_fit_max_range',
+            'wall_fit_minimum_span', 'minimum_handoff_wall_length',
+            'handoff_heading_tolerance', 'handoff_distance_tolerance',
+            'alignment_settle_time', 'alignment_escape_clearance',
+            'outside_corner_loss_margin',
+            'outside_corner_confirmation_time', 'outside_corner_turn_angle',
+            'outside_corner_linear_speed', 'outside_corner_turn_speed',
+            'outside_corner_timeout', 'dead_end_priority_multiplier',
+            'revisited_right_turn_radius',
+            'revisited_right_turn_minimum_age',
+            'revisited_right_turn_clearance', 'right_turn_commitment_time',
+            'emergency_front_distance',
+            'minimum_corridor_width', 'corridor_lookahead',
+            'narrow_corridor_confirmation_time',
+            'dead_end_minimum_depth', 'dead_end_side_max_distance',
+            'exploration_evaluation_period', 'minimum_free_area_gain',
+            'loop_return_radius', 'loop_minimum_age',
+            'retrace_radius', 'retrace_minimum_age',
+            'retrace_minimum_length', 'retrace_overlap_ratio',
+            'global_planning_cooldown',
+        )
+        wall_parameters = []
+        for key in wall_keys:
+            wall_parameters.extend([
+                '-p', f'{key}:={self._configuration_value(key)}'
+            ])
         self._start_process(
             'wall_follower',
             'ros2',
@@ -1250,21 +1847,7 @@ class RunManagerWindow(QMainWindow):
                 'clockwise_wall_tracer.py',
                 '--ros-args',
                 '-p', 'use_sim_time:=true',
-                '-p', 'target_wall_distance:='
-                f'{self._configuration_value("target_wall_distance")}',
-                '-p', 'linear_speed:='
-                f'{self._configuration_value("linear_speed")}',
-                '-p', 'nav2_wall_follow_distance:='
-                f'{self._configuration_value("nav2_wall_follow_distance")}',
-                '-p', 'wall_fit_inlier_distance:='
-                f'{self._configuration_value("wall_fit_inlier_distance")}',
-                '-p', 'minimum_handoff_wall_length:='
-                f'{self._configuration_value("minimum_handoff_wall_length")}',
-                '-p', 'dead_end_priority_multiplier:='
-                f'{self._configuration_value("dead_end_priority_multiplier")}',
-                '-p', 'exploration_evaluation_period:=25.0',
-                '-p', 'global_planning_cooldown:='
-                f'{self._configuration_value("global_planning_cooldown")}',
+                *wall_parameters,
             ],
         )
 
@@ -1280,7 +1863,7 @@ class RunManagerWindow(QMainWindow):
 
     def start_simulation(self):
         if (
-            self.role_selector.currentIndex() == 0
+            self._is_real_robot_role()
             or not self.preflight_passed
             or self._is_running('simulation')
             or self._is_running('robot')
@@ -1297,11 +1880,13 @@ class RunManagerWindow(QMainWindow):
                 'headless:=True',
                 'use_rviz:=True',
                 'start_wall_follower:=false',
+                'nav2_body_clearance:='
+                f'{self._configuration_value("robot_clearance")}',
                 *self._slam_launch_arguments(),
-                *self._simulation_launch_arguments(),
             ],
         )
-        QTimer.singleShot(3000, self.open_gazebo)
+        if self.gazebo_gui_switch.isChecked():
+            QTimer.singleShot(3000, self.open_gazebo)
 
     def stop_simulation(self):
         self.stop_wandering_mapper()
@@ -1326,7 +1911,7 @@ class RunManagerWindow(QMainWindow):
             self._request_stop('replay')
             return
         if (
-            self.role_selector.currentIndex() == 0
+            self._is_real_robot_role()
             or not self.preflight_passed
             or self._is_running('recording')
             or self._is_running('robot')
@@ -1562,9 +2147,152 @@ class RunManagerWindow(QMainWindow):
             )
 
     def view_logs(self):
-        target = self.workspace / 'log'
-        target.mkdir(parents=True, exist_ok=True)
-        self._start_process('logs', 'xdg-open', [str(target)])
+        log_dir = self.workspace / 'log'
+        log_dir.mkdir(parents=True, exist_ok=True)
+        run = self._default_log_run()
+        flag = self._latest_log_flag(run)
+        anchor = self._log_anchor_time(run, flag)
+        ros_logs = self._logs_near_time(anchor)
+        report = log_dir / 'latest_run_log_context.txt'
+        self._write_log_context_report(report, run, flag, ros_logs, anchor)
+        self._open_log_report(report, flag)
+        label = run.name if run is not None else 'latest ROS session'
+        suffix = f' at flag "{flag["identifier"]}"' if flag else ''
+        self.statusBar().showMessage(f'Viewing {label}{suffix}')
+
+    def _open_log_report(self, report, flag):
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Run Log Viewer')
+        dialog.resize(1100, 760)
+        layout = QVBoxLayout(dialog)
+        location = QLabel(f'Focused report: {report}')
+        location.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(location)
+        search_row = QHBoxLayout()
+        search_row.addWidget(QLabel('Find:'))
+        search = QLineEdit()
+        search.setPlaceholderText('log flag, warning, node, or timestamp')
+        if flag:
+            search.setText(flag.get('identifier', ''))
+        search_row.addWidget(search, 1)
+        find_next = QPushButton('Find Next')
+        search_row.addWidget(find_next)
+        open_folder = QPushButton('Open Log Folder')
+        search_row.addWidget(open_folder)
+        layout.addLayout(search_row)
+        viewer = QPlainTextEdit()
+        viewer.setReadOnly(True)
+        viewer.setMaximumBlockCount(20000)
+        viewer.setPlainText(report.read_text(encoding='utf-8', errors='replace'))
+        layout.addWidget(viewer, 1)
+
+        def find_text():
+            term = search.text()
+            if not term:
+                return
+            if not viewer.find(term):
+                cursor = viewer.textCursor()
+                cursor.movePosition(QTextCursor.Start)
+                viewer.setTextCursor(cursor)
+                viewer.find(term)
+
+        find_next.clicked.connect(find_text)
+        search.returnPressed.connect(find_text)
+        open_folder.clicked.connect(
+            lambda: subprocess.Popen(['xdg-open', str(report.parent)])
+        )
+        dialog.finished.connect(lambda: setattr(self, 'log_viewer_dialog', None))
+        self.log_viewer_dialog = dialog
+        dialog.show()
+        if flag:
+            find_text()
+
+    def _default_log_run(self):
+        if self.active_run is not None:
+            return self.active_run
+        runs_dir = self.workspace / 'runs'
+        candidates = [
+            path.parent for path in runs_dir.glob('*/metadata.json')
+        ] if runs_dir.is_dir() else []
+        return max(candidates, key=lambda path: path.stat().st_mtime) \
+            if candidates else None
+
+    def _latest_log_flag(self, run):
+        flags_path = self.workspace / 'log/user_log_flags.csv'
+        if not flags_path.is_file():
+            return None
+        with flags_path.open(newline='', encoding='utf-8') as stream:
+            rows = list(csv.DictReader(stream))
+        if run is not None:
+            matching = [row for row in rows if row.get('active_run') == str(run)]
+            return matching[-1] if matching else None
+        return rows[-1] if rows else None
+
+    @staticmethod
+    def _log_anchor_time(run, flag):
+        if flag and flag.get('utc_timestamp'):
+            try:
+                return datetime.fromisoformat(flag['utc_timestamp']).timestamp()
+            except ValueError:
+                pass
+        if run is not None:
+            return run.stat().st_mtime
+        launch_dirs = list((Path.home() / '.ros/log').glob('20*'))
+        return max(path.stat().st_mtime for path in launch_dirs) \
+            if launch_dirs else datetime.now().timestamp()
+
+    @staticmethod
+    def _logs_near_time(anchor):
+        ros_log_dir = Path.home() / '.ros/log'
+        candidates = [
+            path for path in ros_log_dir.glob('*.log')
+            if path.is_file() and abs(path.stat().st_mtime - anchor) <= 3600
+        ]
+        return sorted(
+            candidates,
+            key=lambda path: abs(path.stat().st_mtime - anchor),
+        )[:16]
+
+    @staticmethod
+    def _write_log_context_report(report, run, flag, logs, anchor):
+        lines = [
+            'ROBOT RUN LOG CONTEXT',
+            f'Run: {run if run is not None else "latest ROS session"}',
+            f'Anchor time: {datetime.fromtimestamp(anchor).astimezone().isoformat()}',
+        ]
+        if flag:
+            lines.extend([
+                f'Flag: {flag.get("identifier", "")}',
+                f'Flag UTC: {flag.get("utc_timestamp", "")}',
+                f'Flag ROS nanoseconds: {flag.get("ros_time_nanoseconds", "")}',
+            ])
+        else:
+            lines.append('Flag: none; showing context near the latest run activity')
+        lines.append('')
+        timestamp_pattern = re.compile(r'\[(\d{10}(?:\.\d+)?)\]')
+        for path in logs:
+            try:
+                source_lines = path.read_text(
+                    encoding='utf-8', errors='replace'
+                ).splitlines()
+            except OSError:
+                continue
+            timed = []
+            for index, line in enumerate(source_lines):
+                match = timestamp_pattern.search(line)
+                if match:
+                    timed.append((abs(float(match.group(1)) - anchor), index))
+            center = min(timed)[1] if timed else max(0, len(source_lines) - 20)
+            start = max(0, center - 12)
+            end = min(len(source_lines), center + 13)
+            lines.extend([
+                '=' * 72,
+                f'{path.name}  (lines {start + 1}-{end})',
+                '=' * 72,
+                *source_lines[start:end],
+                '',
+            ])
+        report.write_text('\n'.join(lines) + '\n', encoding='utf-8')
 
     def flag_and_open_logs(self):
         identifier, accepted = QInputDialog.getText(
@@ -1610,25 +2338,66 @@ class RunManagerWindow(QMainWindow):
                     self.operator_input.text().strip(),
                     self.scenario_input.text().strip(),
                 ])
-        recent = sorted(
-            (
-                path for path in log_dir.rglob('*')
-                if path.is_file() and path != flags_path
-            ),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )[:5]
-        terminal = shutil.which('x-terminal-emulator')
-        if terminal:
-            self._start_process(
-                'logs', terminal, ['-e', 'less', '+G', str(flags_path), *map(str, recent)]
-            )
-        else:
-            self._start_process('logs', 'xdg-open', [str(log_dir)])
         self.output.appendPlainText(
             f'Log flag written: {identifier} ({flags_path})'
         )
         self.statusBar().showMessage(f'Logs flagged: {identifier}')
+        self.view_logs()
+
+    def rebuild_and_restart_manager(self):
+        """Build the workspace after this process exits, then relaunch it."""
+        active = [name for name in self.processes if self._is_running(name)]
+        if active:
+            QMessageBox.warning(
+                self,
+                'Managed processes are active',
+                'Stop these processes before rebuilding: '
+                + ', '.join(active),
+            )
+            return
+        answer = QMessageBox.question(
+            self,
+            'Rebuild and restart?',
+            'Save settings, close this Manager, rebuild the complete ROS '
+            'workspace, and automatically open the updated Manager?',
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Yes,
+        )
+        if answer != QMessageBox.Yes or not self._save_configuration():
+            return
+        script = (
+            self.workspace
+            / 'src/robot_run_manager/scripts/rebuild_and_restart.sh'
+        )
+        if not script.is_file():
+            QMessageBox.critical(
+                self,
+                'Rebuild unavailable',
+                'The rebuild script is missing.',
+            )
+            return
+        rebuild_log = self.workspace / 'log/manager_rebuild.log'
+        rebuild_log.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with rebuild_log.open('a', encoding='utf-8') as output:
+                output.write(f'\n--- rebuild requested {self._utc_now()} ---\n')
+                output.flush()
+                subprocess.Popen(
+                    [
+                        'bash', str(script), str(self.workspace),
+                        str(os.getpid()),
+                    ],
+                    cwd=self.workspace,
+                    stdout=output,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+        except OSError as error:
+            QMessageBox.critical(self, 'Could not start rebuild', str(error))
+            return
+        self.statusBar().showMessage('Closing for workspace rebuild')
+        QTimer.singleShot(250, self.close)
 
     def install_desktop_launcher(self):
         answer = QMessageBox.question(
@@ -1877,9 +2646,25 @@ class RunManagerWindow(QMainWindow):
     def open_gazebo(self):
         if (
             self._is_running('simulation')
+            and self.gazebo_gui_switch.isChecked()
             and not self._is_running('gazebo_client')
         ):
-            self._start_process('gazebo_client', 'gzclient', [])
+            plugin = (
+                self.workspace / 'install/create2_demo/lib/'
+                'libgazebo_fps_limiter.so'
+            )
+            arguments = (
+                ['--gui-client-plugin', str(plugin)] if plugin.is_file() else []
+            )
+            self._start_process(
+                'gazebo_client',
+                'gzclient',
+                arguments,
+                environment={
+                    'ROBOT_GAZEBO_GUI_FPS':
+                    self.gazebo_fps_selector.currentText(),
+                },
+            )
 
     def closeEvent(self, event):
         if self._is_running('recording'):
@@ -1912,6 +2697,9 @@ class RunManagerWindow(QMainWindow):
                 self._request_stop(name)
         if self._save_configuration():
             self.output.appendPlainText('Configuration settings saved.')
+        self.behavior_tree_timer.stop()
+        self.ros_spin_timer.stop()
+        self.supervisor_tree.shutdown()
         event.accept()
 
 

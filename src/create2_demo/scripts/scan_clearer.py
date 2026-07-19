@@ -23,8 +23,13 @@ class ScanClearer(Node):
         self.declare_parameter("clearing_topic", "/scan_clear")
         self.declare_parameter("clearing_margin", 0.05)
         self.declare_parameter("self_filter_margin", 0.02)
-        output_qos = QoSProfile(depth=10)
-        output_qos.reliability = ReliabilityPolicy.RELIABLE
+        self.declare_parameter("maximum_scan_age", 0.50)
+        self.declare_parameter("stamp_offset_seconds", 0.0)
+        # A sensor stream should favor the newest measurement. Reliable depth
+        # ten could replay an old scan after CPU starvation, when its TF data
+        # has already aged out of Nav2's cache.
+        output_qos = QoSProfile(depth=1)
+        output_qos.reliability = ReliabilityPolicy.BEST_EFFORT
         output_qos.durability = DurabilityPolicy.VOLATILE
         self._filtered_publisher = self.create_publisher(
             LaserScan, str(self.get_parameter("filtered_topic").value),
@@ -75,7 +80,31 @@ class ScanClearer(Node):
         return chassis or left_wheel or right_wheel or side_brush
 
     def _scan(self, message):
+        stamp_ns = (
+            message.header.stamp.sec * 1_000_000_000
+            + message.header.stamp.nanosec
+        )
+        age = (self.get_clock().now().nanoseconds - stamp_ns) / 1e9
+        maximum_age = float(self.get_parameter("maximum_scan_age").value)
+        if age > maximum_age:
+            self.get_logger().warn(
+                f"Rejecting LiDAR sample already {age:.3f} s old; newest data "
+                "will be used instead.",
+                throttle_duration_sec=2.0,
+            )
+            return
         filtered = self._copy_scan(message)
+        # Gazebo's ray sensor callback precedes the matching 50 Hz odometry
+        # publication. A small simulation-only offset lets TF message filters
+        # wait for that transform instead of rejecting the scan as older than
+        # their entire cache. Real-robot launches retain the zero default.
+        stamp_offset = float(
+            self.get_parameter("stamp_offset_seconds").value
+        )
+        if stamp_offset:
+            corrected_ns = stamp_ns + int(stamp_offset * 1e9)
+            filtered.header.stamp.sec = corrected_ns // 1_000_000_000
+            filtered.header.stamp.nanosec = corrected_ns % 1_000_000_000
         filtered.ranges = []
         for index, value in enumerate(message.ranges):
             angle = message.angle_min + index * message.angle_increment

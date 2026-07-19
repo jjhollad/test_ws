@@ -26,14 +26,36 @@ class NavigationActivator(Node):
         super().__init__("navigation_activator")
 
     def state(self, name, timeout=10.0):
-        client = self.create_client(GetState, f"/{name}/get_state")
-        if not client.wait_for_service(timeout_sec=timeout):
-            raise RuntimeError(f"/{name}/get_state did not become available")
-        future = client.call_async(GetState.Request())
-        rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
-        if not future.done() or future.result() is None:
-            raise RuntimeError(f"/{name}/get_state did not respond")
-        return future.result().current_state.id, future.result().current_state.label
+        # Humble can lose the first lifecycle response while several composed
+        # Nav2 servers are still constructing. Retry short requests until the
+        # overall deadline instead of spending the whole timeout on one future
+        # and permanently abandoning an otherwise healthy stack.
+        deadline = time.monotonic() + timeout
+        last_error = "service unavailable"
+        while time.monotonic() < deadline and rclpy.ok():
+            remaining = deadline - time.monotonic()
+            client = self.create_client(GetState, f"/{name}/get_state")
+            try:
+                if not client.wait_for_service(timeout_sec=min(2.0, remaining)):
+                    last_error = "service unavailable"
+                    continue
+                future = client.call_async(GetState.Request())
+                rclpy.spin_until_future_complete(
+                    self, future, timeout_sec=min(2.0, remaining)
+                )
+                if future.done() and future.result() is not None:
+                    state = future.result().current_state
+                    return state.id, state.label
+                last_error = "response timed out"
+                if not future.done():
+                    client.remove_pending_request(future)
+            finally:
+                self.destroy_client(client)
+            time.sleep(0.1)
+        raise RuntimeError(
+            f"/{name}/get_state did not respond before {timeout:.0f} s "
+            f"({last_error})"
+        )
 
     def transition(self, name, transition_id, target_state, target_label):
         client = self.create_client(ChangeState, f"/{name}/change_state")
@@ -106,8 +128,21 @@ def main():
     node = NavigationActivator()
     exit_code = 0
     try:
-        node.run()
-        node.get_logger().info("All Nav2 navigation servers are active.")
+        for attempt in range(1, 6):
+            try:
+                node.run()
+                node.get_logger().info(
+                    "All Nav2 navigation servers are active."
+                )
+                break
+            except Exception as error:
+                if attempt == 5:
+                    raise
+                node.get_logger().warn(
+                    f"Nav2 activation attempt {attempt}/5 failed: {error}; "
+                    "retrying the idempotent lifecycle sequence."
+                )
+                time.sleep(2.0)
     except Exception as error:  # launch must receive a nonzero exit on failure
         node.get_logger().error(str(error))
         exit_code = 1

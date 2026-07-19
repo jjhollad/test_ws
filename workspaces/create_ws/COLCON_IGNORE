@@ -1,0 +1,3 @@
+# This directory is an archived nested workspace. The canonical create_robot
+# packages are under ../../src/create_robot; discovering both copies causes
+# colcon to reject the entire top-level workspace as duplicate packages.

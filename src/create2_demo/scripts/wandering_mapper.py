@@ -13,6 +13,7 @@ from geometry_msgs.msg import PoseStamped
 from nav2_msgs.action import BackUp, NavigateThroughPoses
 from nav_msgs.msg import OccupancyGrid, Path
 from rclpy.action import ActionClient
+from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import (
     DurabilityPolicy,
@@ -28,14 +29,19 @@ GridPoint = Tuple[int, int]
 
 
 class WanderingMapper(Node):
+    # Conservative rotation-independent radius of the asymmetric Nav2
+    # footprint [[1.05,.35], [1.05,-.45], [-.02,-.45], [-.02,.35]].
+    _FOOTPRINT_CIRCUMRADIUS = math.hypot(1.05, 0.45)
+
     def __init__(self):
         super().__init__("wandering_mapper")
         defaults = {
             "map_topic": "/map", "map_frame": "map", "robot_frame": "base_footprint",
-            "free_threshold": 20, "robot_clearance": 0.58, "goal_clearance": 0.62,
+            "free_threshold": 20, "robot_clearance": 0.10, "goal_clearance": 0.15,
             "minimum_frontier_size": 0.50, "waypoint_spacing": 0.75,
             "path_simplification": 0.22, "frontier_standoff": 0.45,
-            "planning_period": 0.50, "maximum_route_poses": 40,
+            "planning_period": 2.00, "maximum_route_poses": 40,
+            "preview_planning_period": 0.50, "preview_maximum_age": 1.25,
             "clearance_weight": 5.0, "completion_cycles": 4,
             "minimum_goal_distance": 1.80, "minimum_route_length": 2.00,
             "minimum_route_poses": 3, "information_radius": 1.50,
@@ -71,6 +77,7 @@ class WanderingMapper(Node):
             "minimum_discovery_area_gain": 1.0,
             "stuck_radius": 2.0, "stuck_timeout": 120.0,
             "recovery_backup_distance": 2.14, "recovery_backup_speed": 0.15,
+            "backup_replan_attempts": 2,
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value)
@@ -81,7 +88,10 @@ class WanderingMapper(Node):
         self._map: Optional[OccupancyGrid] = None
         self._scan: Optional[LaserScan] = None
         self._wall_tracing = False
+        self._frontier_handoff_requested = False
         self._preview_poses = []
+        self._preview_choice = None
+        self._preview_created_time = None
         self._busy = False
         self._goal_handle = None
         self._route_generation = 0
@@ -96,6 +106,8 @@ class WanderingMapper(Node):
         self._unavoidable_transit = False
         self._stuck_anchor = None
         self._stuck_anchor_time = None
+        self._physical_contact = False
+        self._recovery_replan_attempts = 0
         self._force_least_explored = False
         self._target = (0.0, 0.0)
         self._has_target = False
@@ -104,13 +116,19 @@ class WanderingMapper(Node):
         self._origin = None
         self._returning_home = False
         self._visited_world: List[Tuple[float, float]] = []
-        self._tf_buffer = Buffer()
+        # SLAM loop closure can briefly pause map->odom while odometry keeps
+        # advancing.  The default ten-second cache then has no common time
+        # across map->odom->base_footprint, even though all stamps are valid.
+        self._tf_buffer = Buffer(cache_time=Duration(seconds=120.0))
         self._tf_listener = TransformListener(self._tf_buffer, self)
         self._action = ActionClient(self, NavigateThroughPoses, "navigate_through_poses")
         self._backup_action = ActionClient(self, BackUp, "backup")
         self._path_pub = self.create_publisher(Path, "wandering_path", qos)
         self._return_home_pub = self.create_publisher(
             Bool, "/mapping_return_home", 10
+        )
+        self._frontier_complete_pub = self.create_publisher(
+            Bool, "/frontier_navigation_complete", 10
         )
         self.create_subscription(
             OccupancyGrid, str(self.get_parameter("map_topic").value),
@@ -122,8 +140,19 @@ class WanderingMapper(Node):
         self.create_subscription(
             Bool, "/wall_tracing_active", self._wall_trace_callback, 10,
         )
+        self.create_subscription(
+            Bool, "/frontier_handoff_requested",
+            self._frontier_handoff_callback, 10,
+        )
+        self.create_subscription(
+            Bool, "/physical_contact", self._physical_contact_callback, 10,
+        )
         self._timer = self.create_timer(
             float(self.get_parameter("planning_period").value), self._plan
+        )
+        self._preview_timer = self.create_timer(
+            float(self.get_parameter("preview_planning_period").value),
+            self._refresh_wall_preview,
         )
         self.get_logger().info("Waiting for map, robot TF, and active Nav2.")
 
@@ -148,13 +177,62 @@ class WanderingMapper(Node):
             )
             self._goal_handle.cancel_goal_async()
         elif was_active and not self._wall_tracing:
+            if not self._busy and self._dispatch_cached_preview():
+                self.get_logger().info(
+                    "Clockwise tracing yielded; dispatched the prepared "
+                    "global route immediately."
+                )
+            elif not self._busy:
+                self.get_logger().info(
+                    "Clockwise tracing yielded; prepared route was stale, "
+                    "calculating a fresh global route."
+                )
+                self._plan()
+
+    def _refresh_wall_preview(self):
+        """Continuously keep a near-current route ready during wall control."""
+        if self._wall_tracing and not self._busy:
+            self._plan()
+
+    def _frontier_handoff_callback(self, message):
+        """Select the nearest frontier while wall tracing has yielded."""
+        newly_requested = message.data and not self._frontier_handoff_requested
+        self._frontier_handoff_requested = message.data
+        if newly_requested:
+            self._frontier_complete_pub.publish(Bool(data=False))
             self.get_logger().info(
-                "Clockwise tracing yielded; refreshing the prepared global route."
+                "Wall progress stalled; nearest-frontier handoff requested."
             )
-            # The timer will also plan, but an immediate refresh minimizes the
-            # handoff gap and accounts for the robot's newest pose.
+            # If wall control has not yielded yet, calculate the specifically
+            # requested nearest-frontier route now and cache it for immediate
+            # dispatch when the ownership message arrives.
             if not self._busy:
                 self._plan()
+
+    def _dispatch_cached_preview(self):
+        """Send a fresh prepared route immediately when wall control yields."""
+        if self._preview_choice is None or self._preview_created_time is None:
+            return False
+        now = self.get_clock().now()
+        age = (now - self._preview_created_time).nanoseconds / 1e9
+        if age < 0.0 or age > float(
+            self.get_parameter("preview_maximum_age").value
+        ):
+            return False
+        return self._dispatch_route(self._preview_choice, prepared_age=age)
+
+    def _physical_contact_callback(self, message):
+        """Track contact independently from route-progress heuristics."""
+        self._physical_contact = bool(message.data)
+
+    def _backup_is_last_resort(self, truly_stuck, now=None):
+        """Permit reverse recovery only after contact and replans failed."""
+        attempts = int(self.get_parameter("backup_replan_attempts").value)
+        return (
+            truly_stuck
+            and self._physical_contact
+            and self._recovery_replan_attempts >= attempts
+        )
 
     def _robot_world(self):
         try:
@@ -192,6 +270,7 @@ class WanderingMapper(Node):
         if displacement >= radius:
             self._stuck_anchor = (x, y)
             self._stuck_anchor_time = now
+            self._recovery_replan_attempts = 0
             return False
         elapsed = (now - self._stuck_anchor_time).nanoseconds / 1e9
         return elapsed >= timeout
@@ -225,7 +304,13 @@ class WanderingMapper(Node):
         # free cells below, so this does not permit motion into unknown space.
         occupied = values > threshold
         clearance = cv2.distanceTransform((~occupied).astype(np.uint8), cv2.DIST_L2, 5)
-        radius = float(self.get_parameter("robot_clearance").value) / message.info.resolution
+        # distanceTransform measures obstacle-to-base-origin distance. Add the
+        # full footprint radius so the configured value means free space from
+        # the nearest outside point at every possible route orientation.
+        radius = (
+            self._FOOTPRINT_CIRCUMRADIUS
+            + float(self.get_parameter("robot_clearance").value)
+        ) / message.info.resolution
         traversable = free & (clearance >= radius)
         if not self._inside(traversable, robot):
             return None
@@ -288,7 +373,10 @@ class WanderingMapper(Node):
         cells += (r0, c0)
         clear = clearance[cells[:, 0], cells[:, 1]]
         distance = np.linalg.norm(cells - center, axis=1)
-        required = float(self.get_parameter("goal_clearance").value) / resolution
+        required = (
+            self._FOOTPRINT_CIRCUMRADIUS
+            + float(self.get_parameter("goal_clearance").value)
+        ) / resolution
         # Stay close to the useful frontier once the footprint clearance has
         # been met. Excess clearance is only a tie-breaker; otherwise goals
         # collapse back toward the already mapped middle of the room.
@@ -746,7 +834,11 @@ class WanderingMapper(Node):
                     world_goal[1] - robot_y, world_goal[0] - robot_x
                 )
                 alignment = math.cos(goal_heading - robot_yaw)
-                if self._force_least_explored:
+                if self._frontier_handoff_requested:
+                    # Leave the exhausted wall segment by the shortest safe
+                    # route to a new map boundary.
+                    score = -1000.0 * distance + gain
+                elif self._force_least_explored:
                     # Recovery deliberately favors the frontier with the most
                     # observable unknown area. Distance is only a tie-breaker.
                     score = gain * 1000.0 + len(component) - distance
@@ -760,7 +852,9 @@ class WanderingMapper(Node):
                         - float(self.get_parameter("reverse_penalty").value)
                         * max(0.0, -alignment)
                     )
-                if self._has_target and not self._force_least_explored:
+                if (self._has_target
+                        and not self._force_least_explored
+                        and not self._frontier_handoff_requested):
                     score -= float(
                         self.get_parameter("continuity_weight").value
                     ) * math.hypot(
@@ -770,7 +864,9 @@ class WanderingMapper(Node):
                 ranked.append(
                     (score, goal, len(component), gain, distance, alignment)
                 )
-        corridor = None if self._force_least_explored else self._corridor_goal(
+        corridor = None if (
+            self._force_least_explored or self._frontier_handoff_requested
+        ) else self._corridor_goal(
             self._map, values, reachable, clearance,
             robot_x, robot_y, robot_yaw,
         )
@@ -791,7 +887,9 @@ class WanderingMapper(Node):
                 f"between walls {corridor_width:.1f} m apart.",
                 throttle_duration_sec=5.0,
             )
-        if lidar_corridor is not None and not self._force_least_explored:
+        if (lidar_corridor is not None
+                and not self._force_least_explored
+                and not self._frontier_handoff_requested):
             _, lidar_candidates = lidar_corridor
             for goal, lidar_distance, lidar_width, turn in lidar_candidates:
                 if not self._inside(reachable, goal) or not reachable[goal]:
@@ -813,7 +911,8 @@ class WanderingMapper(Node):
         # If there is useful mapped space ahead, do not consider a target that
         # begins with a turn into the rear half-plane.  Rear targets remain a
         # fallback when obstacles leave no forward frontier at all.
-        if not self._force_least_explored:
+        if (not self._force_least_explored
+                and not self._frontier_handoff_requested):
             forward_ranked = [candidate for candidate in ranked if candidate[5] >= 0.0]
             if forward_ranked:
                 ranked = forward_ranked
@@ -828,7 +927,15 @@ class WanderingMapper(Node):
         )
         for minimum_length, minimum_poses in route_limits:
             viable = []
-            for base_score, goal, size, gain, distance, alignment in ranked[:12]:
+            # A background preview must finish before it can help a handoff.
+            # Full A* evaluation of twelve frontiers on a large map took
+            # 20-40 seconds and blocked ownership messages. Keep the best
+            # ranked preview candidate warm; normal active planning retains
+            # the broader search for route quality.
+            candidate_limit = 1 if preview_only else 12
+            for base_score, goal, size, gain, distance, alignment in ranked[
+                :candidate_limit
+            ]:
                 raw = self._astar(
                     reachable, clearance, robot, goal,
                     self._map.info.resolution,
@@ -841,10 +948,11 @@ class WanderingMapper(Node):
                 revisit_distance = self._route_revisit_distance(
                     raw, visited, self._map.info.resolution
                 )
-                raw = self._rolling_horizon(
-                    raw, self._map.info.resolution,
-                    float(self.get_parameter("route_horizon").value),
-                )
+                if not self._frontier_handoff_requested:
+                    raw = self._rolling_horizon(
+                        raw, self._map.info.resolution,
+                        float(self.get_parameter("route_horizon").value),
+                    )
                 route_length = self._route_length(
                     raw, self._map.info.resolution
                 )
@@ -878,12 +986,13 @@ class WanderingMapper(Node):
                         wall_revisit = self._route_revisit_distance(
                             wall_raw, visited, self._map.info.resolution
                         )
-                        wall_raw = self._rolling_horizon(
-                            wall_raw, self._map.info.resolution,
-                            float(self.get_parameter(
-                                "unavoidable_route_horizon"
-                            ).value),
-                        )
+                        if not self._frontier_handoff_requested:
+                            wall_raw = self._rolling_horizon(
+                                wall_raw, self._map.info.resolution,
+                                float(self.get_parameter(
+                                    "unavoidable_route_horizon"
+                                ).value),
+                            )
                         wall_length = self._route_length(
                             wall_raw, self._map.info.resolution
                         )
@@ -934,6 +1043,8 @@ class WanderingMapper(Node):
                 break
         if chosen is None:
             if preview_only:
+                self._preview_choice = None
+                self._preview_created_time = None
                 self.get_logger().info(
                     "Wall tracing active; no global preview route is currently "
                     "reachable.",
@@ -974,12 +1085,50 @@ class WanderingMapper(Node):
         self._path_pub.publish(preview)
         self._preview_poses = poses
         if preview_only:
+            self._preview_choice = chosen
+            self._preview_created_time = self.get_clock().now()
             self.get_logger().info(
                 f"Global route preview ready with {len(poses)} poses while "
                 "clockwise tracing owns velocity control.",
                 throttle_duration_sec=5.0,
             )
             return
+        self._dispatch_route(chosen)
+
+    def _dispatch_route(self, chosen, prepared_age=None):
+        """Join a selected route at its closest waypoint and submit it."""
+        (
+            goal, size, poses, gain, route_length, revisit_distance,
+            avoidable_revisit, unavoidable_transit,
+        ) = chosen
+        world = self._robot_world()
+        if world is None or not poses:
+            self.get_logger().warn(
+                "Cannot join planned path without a current robot pose and "
+                "at least one waypoint."
+            )
+            return False
+        nearest = min(
+            range(len(poses)),
+            key=lambda index: math.hypot(
+                poses[index].pose.position.x - world[0],
+                poses[index].pose.position.y - world[1],
+            ),
+        )
+        skipped = nearest
+        poses = list(poses[nearest:])
+        stamp = self.get_clock().now().to_msg()
+        for pose in poses:
+            pose.header.stamp = stamp
+        # Show exactly what Nav2 will receive, rather than retaining the
+        # obsolete prefix from the earlier preview calculation.
+        dispatched_path = Path()
+        dispatched_path.header.frame_id = str(
+            self.get_parameter("map_frame").value
+        )
+        dispatched_path.header.stamp = stamp
+        dispatched_path.poses = poses
+        self._path_pub.publish(dispatched_path)
         request = NavigateThroughPoses.Goal()
         request.poses = poses
         self._target = self._grid_to_world(self._map, goal)
@@ -1003,6 +1152,15 @@ class WanderingMapper(Node):
             f"over {route_length:.1f} m using {len(poses)} smooth poses; "
             f"{revisit_distance:.1f} m overlaps prior travel, "
             f"{avoidable_revisit:.1f} m is penalized."
+            + (
+                f" Prepared {prepared_age:.2f} s before handoff."
+                if prepared_age is not None else ""
+            )
+            + (
+                f" Joined at closest waypoint after skipping {skipped} "
+                "obsolete pose(s)."
+                if skipped else " Joined at the first waypoint."
+            )
         )
         self._route_generation += 1
         generation = self._route_generation
@@ -1014,6 +1172,7 @@ class WanderingMapper(Node):
         future.add_done_callback(
             lambda result, route=generation: self._goal_response(result, route)
         )
+        return True
 
     def _send_return_home(self):
         if self._origin is None or self._returning_home:
@@ -1061,20 +1220,25 @@ class WanderingMapper(Node):
             truly_stuck = False
             if world is not None:
                 truly_stuck = self._update_stuck_state(world[0], world[1], now)
-            self._recovery_requested = truly_stuck
-            self._global_recovery_requested = not truly_stuck
-            self._force_least_explored = not truly_stuck
-            if truly_stuck:
+            use_backup = self._backup_is_last_resort(truly_stuck, now)
+            self._recovery_requested = use_backup
+            self._global_recovery_requested = not use_backup
+            self._force_least_explored = not use_backup
+            if use_backup:
                 stuck_timeout = float(self.get_parameter("stuck_timeout").value)
                 stuck_radius = float(self.get_parameter("stuck_radius").value)
                 self.get_logger().warn(
-                    f"Robot remained within {stuck_radius:.1f} m for "
-                    f"{stuck_timeout:.0f} s; canceling route for backup recovery."
+                    f"Last-resort backup authorized: physical contact, "
+                    f"{stuck_timeout:.0f} s within {stuck_radius:.1f} m, and "
+                    f"{self._recovery_replan_attempts} failed replans."
                 )
             else:
+                self._recovery_replan_attempts += 1
                 self.get_logger().warn(
                     f"No {progress:.2f} m route progress for {timeout:.0f} s; "
-                    "canceling for least-explored global replanning."
+                    "canceling for least-explored global replanning "
+                    f"(recovery attempt {self._recovery_replan_attempts}, "
+                    f"active contact={'yes' if self._physical_contact else 'no'})."
                 )
             self._goal_handle.cancel_goal_async()
         discovery_timeout = float(
@@ -1094,6 +1258,7 @@ class WanderingMapper(Node):
             and not self._recovery_requested
             and not self._global_recovery_requested
             and not self._unavoidable_transit
+            and not self._frontier_handoff_requested
             and self._goal_handle is not None
         ):
             self._global_recovery_requested = True
@@ -1121,6 +1286,7 @@ class WanderingMapper(Node):
             + feedback.navigation_time.nanosec / 1e9
         )
         if (replan_poses > 0
+                and not self._frontier_handoff_requested
                 and not self._rolling_replan_started
                 and navigation_seconds >= extension_period
                 and feedback.number_of_poses_remaining <= replan_poses
@@ -1203,28 +1369,41 @@ class WanderingMapper(Node):
                 world is not None
                 and self._update_stuck_state(world[0], world[1])
             )
-            if truly_stuck:
+            now = self.get_clock().now()
+            if self._backup_is_last_resort(truly_stuck, now):
                 stuck_timeout = float(self.get_parameter("stuck_timeout").value)
                 stuck_radius = float(self.get_parameter("stuck_radius").value)
                 self.get_logger().warn(
-                    f"Route failed after the robot remained within "
-                    f"{stuck_radius:.1f} m for {stuck_timeout:.0f} s; "
-                    "starting backup recovery."
+                    f"Route failed after physical contact, "
+                    f"{stuck_timeout:.0f} s within {stuck_radius:.1f} m, and "
+                    f"{self._recovery_replan_attempts} failed replans; "
+                    "starting last-resort backup."
                 )
                 self._recovery_requested = True
                 self._start_backup()
                 return
+            self._recovery_replan_attempts += 1
             self.get_logger().warn(
-                "Route failed; requesting a least-explored global recovery path."
+                "Route failed; requesting a least-explored global recovery "
+                f"path (attempt {self._recovery_replan_attempts}; backup "
+                "requires confirmed contact and exhausted replans)."
             )
             self._force_least_explored = True
         else:
             self.get_logger().info("Frontier reached; updating exploration plan.")
+            self._recovery_replan_attempts = 0
             # Do not repeatedly submit a goal that remains on the frontier
             # mask while SLAM catches up.  Treat a reached target as explored
             # and require the next segment to advance at least 1.5 m from it.
             self._blacklist.append(self._target)
             self._blacklist = self._blacklist[-20:]
+            if self._frontier_handoff_requested:
+                self._frontier_handoff_requested = False
+                self._frontier_complete_pub.publish(Bool(data=True))
+                self.get_logger().info(
+                    "Nearest-frontier handoff complete; returning control "
+                    "eligibility to wall following."
+                )
         self._busy = False
 
     def _shutdown_completed_mission(self):
@@ -1251,7 +1430,7 @@ class WanderingMapper(Node):
         )
         request.time_allowance.sec = max(20, int(distance / request.speed) + 10)
         self.get_logger().warn(
-            f"Backing up {distance:.2f} m (two chassis lengths) for recovery."
+            f"Backing up {distance:.2f} m as last-resort contact recovery."
         )
         future = self._backup_action.send_goal_async(request)
         future.add_done_callback(self._backup_response)
@@ -1277,6 +1456,7 @@ class WanderingMapper(Node):
         self._recovery_requested = False
         self._stuck_anchor = None
         self._stuck_anchor_time = None
+        self._recovery_replan_attempts = 0
         self._busy = False
 
 

@@ -3,6 +3,9 @@
   <world name="corridor_museum">
     <include><uri>model://sun</uri></include>
     <physics name="default_physics" type="ode">
+      <!-- Make the intended one-second simulation/one-second wall-time ratio
+           explicit.  Sensor and odometry rates divide evenly into this step. -->
+      <real_time_factor>1.0</real_time_factor>
       <real_time_update_rate>1000</real_time_update_rate>
       <max_step_size>0.001</max_step_size>
     </physics>

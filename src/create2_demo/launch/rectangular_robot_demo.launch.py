@@ -47,6 +47,19 @@ def generate_launch_description():
         ).replace(
             "min_laser_range: 0.0", "min_laser_range: 0.12"
         ).replace(
+            # The 10 Hz laser and 50 Hz odometry are driven by the same Gazebo
+            # clock.  A 100 ms margin covers several odometry updates without
+            # future-dating map->odom by a quarter second.  Keep the message
+            # filter short: a 100-scan queue could replay roughly ten seconds
+            # of obsolete laser data after even a brief timing discontinuity.
+            "transform_timeout: 0.2",
+            "transform_timeout: 0.10\n    scan_queue_size: 5",
+        ).replace(
+            # Long loop-closure solves can pause map->odom updates while
+            # Gazebo odometry continues.  Retain enough correctly stamped TF
+            # history to join the two sides of the chain after that pause.
+            "tf_buffer_duration: 30.", "tf_buffer_duration: 120."
+        ).replace(
             "map_update_interval: 1.0",
             "map_update_interval: __SLAM_MAP_UPDATE_INTERVAL__",
         ).replace(
@@ -73,6 +86,18 @@ def generate_launch_description():
         ).replace(
             "loop_search_maximum_distance: 3.0",
             "loop_search_maximum_distance: __SLAM_LOOP_SEARCH_DISTANCE__",
+        ).replace(
+            # Long, similar corridors are unusually prone to a geometrically
+            # plausible but incorrect loop closure.  Require more supporting
+            # scans and stronger coarse/fine agreement before moving the map.
+            "loop_match_minimum_chain_size: 10",
+            "loop_match_minimum_chain_size: 15",
+        ).replace(
+            "loop_match_minimum_response_coarse: 0.35",
+            "loop_match_minimum_response_coarse: 0.45",
+        ).replace(
+            "loop_match_minimum_response_fine: 0.45",
+            "loop_match_minimum_response_fine: 0.55",
         )
 
     nav2_params = ReplaceString(
@@ -81,7 +106,8 @@ def generate_launch_description():
             "robot_base_frame: base_link": "robot_base_frame: base_footprint",
             "robot_radius: 0.22": (
                 'footprint: "[[1.05, 0.35], [1.05, -0.45], '
-                '[-0.02, -0.45], [-0.02, 0.35]]"'
+                '[-0.02, -0.45], [-0.02, 0.35]]"\n'
+                '      footprint_padding: __NAV2_BODY_CLEARANCE__'
             ),
             "max_vel_x: 0.26": "max_vel_x: 0.30",
             "bt_loop_duration: 10": "bt_loop_duration: 50",
@@ -102,6 +128,14 @@ def generate_launch_description():
             # Costmap clearing uses the finite-ray stream.  RViz continues to
             # display the genuine /scan stream, where no-returns remain inf.
             "          topic: /scan": "          topic: /scan_clear",
+            # Retain the last valid obstacle briefly across a dropped scan,
+            # but mark the observation source stale after three missed 10 Hz
+            # updates so Nav2 stops rather than driving on old perception.
+            '          data_type: "LaserScan"': (
+                '          data_type: "LaserScan"\n'
+                '          observation_persistence: 0.50\n'
+                '          expected_update_rate: 0.45'
+            ),
             # This is the final stock Nav2 parameter, so it is a stable point
             # at which to append the separate slam_toolbox node section.
             "    velocity_timeout: 1.0": (
@@ -132,6 +166,9 @@ def generate_launch_description():
             "__SLAM_LOOP_SEARCH_DISTANCE__": LaunchConfiguration(
                 "slam_loop_search_distance"
             ),
+            "__NAV2_BODY_CLEARANCE__": LaunchConfiguration(
+                "nav2_body_clearance"
+            ),
             # Exploration goals are positional. Accept any final orientation so
             # DWB does not spin in place trying to match a frontier tangent.
             "      stateful: True": "      stateful: False",
@@ -150,17 +187,6 @@ def generate_launch_description():
     wall_evaluation = LaunchConfiguration("wall_evaluation")
     wall_cooldown = LaunchConfiguration("wall_cooldown")
     start_wall_follower = LaunchConfiguration("start_wall_follower")
-    simulation_world = ReplaceString(
-        source_file=LaunchConfiguration("world"),
-        replacements={
-            "<real_time_update_rate>1000</real_time_update_rate>": [
-                "<real_time_update_rate>",
-                LaunchConfiguration("sim_real_time_update_rate"),
-                "</real_time_update_rate>",
-            ],
-        },
-    )
-
     spawn_robot = Node(
         package="gazebo_ros",
         executable="spawn_entity.py",
@@ -194,31 +220,41 @@ def generate_launch_description():
             ),
         }.items(),
     )
+    navigation_activator = Node(
+        package="create2_demo",
+        executable="activate_navigation.py",
+        name="navigation_activator",
+        output="screen",
+    )
 
     return LaunchDescription([
         DeclareLaunchArgument("headless", default_value="False"),
+        DeclareLaunchArgument("nav2_body_clearance", default_value="0.10"),
         DeclareLaunchArgument("use_rviz", default_value="True"),
         DeclareLaunchArgument("world", default_value=default_world),
-        DeclareLaunchArgument("wall_distance", default_value="1.05"),
+        DeclareLaunchArgument("wall_distance", default_value="0.60"),
         DeclareLaunchArgument("wall_speed", default_value="0.28"),
         DeclareLaunchArgument("wall_evaluation", default_value="25.0"),
         DeclareLaunchArgument("wall_cooldown", default_value="300.0"),
+        DeclareLaunchArgument("minimum_corridor_width", default_value="1.20"),
+        DeclareLaunchArgument(
+            "narrow_corridor_confirmation_time", default_value="0.30"
+        ),
         DeclareLaunchArgument("start_wall_follower", default_value="true"),
-        DeclareLaunchArgument("sim_real_time_update_rate", default_value="1000"),
-        DeclareLaunchArgument("slam_map_update_interval", default_value="0.5"),
+        DeclareLaunchArgument("slam_map_update_interval", default_value="1.0"),
         DeclareLaunchArgument("slam_resolution", default_value="0.05"),
-        DeclareLaunchArgument("slam_minimum_travel_distance", default_value="0.15"),
+        DeclareLaunchArgument("slam_minimum_travel_distance", default_value="0.30"),
         DeclareLaunchArgument("slam_minimum_travel_heading", default_value="0.10"),
-        DeclareLaunchArgument("slam_scan_buffer_size", default_value="15"),
-        DeclareLaunchArgument("slam_scan_buffer_distance", default_value="12.0"),
-        DeclareLaunchArgument("slam_link_match_response", default_value="0.15"),
+        DeclareLaunchArgument("slam_scan_buffer_size", default_value="10"),
+        DeclareLaunchArgument("slam_scan_buffer_distance", default_value="8.0"),
+        DeclareLaunchArgument("slam_link_match_response", default_value="0.20"),
         DeclareLaunchArgument("slam_link_scan_distance", default_value="2.0"),
-        DeclareLaunchArgument("slam_loop_search_distance", default_value="4.0"),
+        DeclareLaunchArgument("slam_loop_search_distance", default_value="3.0"),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 os.path.join(gazebo_share, "launch", "gzserver.launch.py")
             ),
-            launch_arguments={"world": simulation_world}.items(),
+            launch_arguments={"world": LaunchConfiguration("world")}.items(),
         ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
@@ -236,6 +272,16 @@ def generate_launch_description():
             package="create2_demo",
             executable="scan_clearer.py",
             name="scan_clearer",
+            parameters=[{
+                "use_sim_time": True,
+                "stamp_offset_seconds": 0.05,
+            }],
+            output="screen",
+        ),
+        Node(
+            package="create2_demo",
+            executable="contact_monitor.py",
+            name="contact_monitor",
             parameters=[{"use_sim_time": True}],
             output="screen",
         ),
@@ -254,6 +300,14 @@ def generate_launch_description():
                 "global_planning_cooldown": ParameterValue(
                     wall_cooldown, value_type=float
                 ),
+                "minimum_corridor_width": ParameterValue(
+                    LaunchConfiguration("minimum_corridor_width"),
+                    value_type=float,
+                ),
+                "narrow_corridor_confirmation_time": ParameterValue(
+                    LaunchConfiguration("narrow_corridor_confirmation_time"),
+                    value_type=float,
+                ),
             }],
             output="screen",
         ),
@@ -264,18 +318,24 @@ def generate_launch_description():
             OnProcessExit(
                 target_action=spawn_robot,
                 on_exit=[
-                    nav2_bringup,
-                    rviz,
                     TimerAction(
-                        period=5.0,
-                        actions=[Node(
-                            package="create2_demo",
-                            executable="activate_navigation.py",
-                            name="navigation_activator",
-                            output="screen",
-                        )],
+                        period=1.0,
+                        actions=[nav2_bringup],
+                    ),
+                    TimerAction(
+                        period=6.0,
+                        actions=[navigation_activator],
                     ),
                 ],
+            )
+        ),
+        # RViz's fixed frame is map. Starting it only after lifecycle
+        # activation prevents early laser scans from waiting until they are
+        # older than TF's cache.
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=navigation_activator,
+                on_exit=[rviz],
             )
         ),
     ])

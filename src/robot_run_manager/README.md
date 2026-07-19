@@ -54,6 +54,15 @@ robot when replaying.
   settings store when the manager closes and restored on its next launch;
 - every configuration section has its own defaults button so one subsystem can
   be reset without disturbing tuning values in the other sections;
+- a persistent **Show Gazebo GUI** switch runs the simulation headless when
+  unchecked, reducing graphics load while keeping Gazebo physics active;
+- a persistent Gazebo GUI FPS selector limits client rendering to
+  10/15/20/30/60 FPS without changing simulation or sensor timing;
+- **Rebuild & Restart Manager** safely saves settings, rebuilds the complete
+  workspace in a terminal, and relaunches the GUI with the updated code;
+- a live, editable **Behavior Tree** tab uses `py_trees_ros` to show safety,
+  localization, mission selection, wall tracing, corner geometry, recovery,
+  and planner handoffs; selecting a leaf opens its persistent tuning controls;
 - guarded rolling Nav2 route extension, adjustable with **Path extension
   interval**, adds farther frontier poses near the route tail without rapid
   mid-route preemption;
@@ -63,8 +72,6 @@ robot when replaying.
   unproductive route when it fails to add 1.0 m² of free map in time;
 - **SLAM mapping** sliders tune map refresh/resolution, scan travel and heading
   thresholds, scan-buffer size/range, local link matching, and loop search;
-- **Simulation speed multiplier** targets 0.1×–3.0× Gazebo time, while RViz's
-  **Simulation Clock** panel shows the `/clock`-driven ROS time;
 - **Flag & Open Logs** writes a timestamped identifier to
   `log/user_log_flags.csv`, mirrors it into an active run's events, and opens
   the flag index plus recent log files in a terminal reader;

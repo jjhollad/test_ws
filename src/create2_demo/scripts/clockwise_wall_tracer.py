@@ -16,16 +16,27 @@ from rclpy.node import Node
 from rclpy.duration import Duration
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 from tf2_ros import Buffer, TransformException, TransformListener
 
 
 class ClockwiseWallTracer(Node):
+    # Nav2 footprint expressed in laser_frame.  The LiDAR is 0.24 m forward
+    # of base_footprint, so the measured body envelope is x=[-0.26, 0.81],
+    # y=[-0.45, 0.35].  Keeping the complete polygon matters while the robot
+    # is angled: a front or rear corner can be closer than the right edge.
+    _FOOTPRINT_FROM_LASER = (
+        (0.81, 0.35),
+        (0.81, -0.45),
+        (-0.26, -0.45),
+        (-0.26, 0.35),
+    )
+
     def __init__(self):
         super().__init__("clockwise_wall_tracer")
         defaults = {
-            "target_wall_distance": 0.80,
-            "front_stop_distance": 1.25,
+            "target_wall_distance": 0.60,
+            "front_stop_distance": 0.50,
             "linear_speed": 0.22,
             "turn_speed": 0.45,
             "heading_gain": 1.4,
@@ -47,6 +58,7 @@ class ClockwiseWallTracer(Node):
             "trace_path_maximum_poses": 20000,
             "align_with_nav2": True,
             "alignment_settle_time": 0.75,
+            "alignment_escape_clearance": 0.20,
             "alignment_lead_in": 0.60,
             "nav2_wall_follow_distance": 3.0,
             "wall_fit_max_range": 8.0,
@@ -59,6 +71,27 @@ class ClockwiseWallTracer(Node):
             "dead_end_priority_multiplier": 1.20,
             "dead_end_minimum_depth": 1.0,
             "dead_end_side_max_distance": 4.0,
+            # Outside (convex) right corners need a latched maneuver.  The
+            # global line fit may still see the wall behind the robot and
+            # otherwise keep commanding straight travel past the corner.
+            "outside_corner_loss_margin": 0.65,
+            "outside_corner_confirmation_time": 0.35,
+            "outside_corner_turn_angle": 1.57,
+            "outside_corner_linear_speed": 0.07,
+            "outside_corner_turn_speed": 0.38,
+            "outside_corner_timeout": 8.0,
+            "revisited_right_turn_radius": 1.25,
+            "revisited_right_turn_minimum_age": 20.0,
+            "revisited_right_turn_clearance": 0.50,
+            "right_turn_commitment_time": 2.0,
+            "emergency_front_distance": 0.15,
+            "minimum_corridor_width": 1.20,
+            "corridor_lookahead": 6.0,
+            "narrow_corridor_confirmation_time": 0.30,
+            "retrace_radius": 0.60,
+            "retrace_minimum_age": 20.0,
+            "retrace_minimum_length": 2.0,
+            "retrace_overlap_ratio": 0.70,
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value)
@@ -85,14 +118,31 @@ class ClockwiseWallTracer(Node):
         self._dead_end_escape_remaining = 0.0
         self._dead_end_escape_active = False
         self._backup_start = None
+        self._yaw = None
+        self._right_side_seen = False
+        self._right_side_lost_since = None
+        self._outside_corner_start_yaw = None
+        self._outside_corner_started_at = None
+        self._right_turn_priority_until = None
+        self._narrow_corridor_since = None
+        self._narrow_corridor_width = None
+        self._frontier_handoff_active = False
+        self._travel_history = []
+        self._last_retrace_check = None
         self._trace_path = Path()
         self._trace_path.header.frame_id = "odom"
         self._cmd = self.create_publisher(Twist, "/cmd_vel_nav", 10)
         self._active = self.create_publisher(Bool, "/wall_tracing_active", 10)
+        self._state_pub = self.create_publisher(String, "/wall_behavior_state", 10)
+        self._frontier_request_pub = self.create_publisher(
+            Bool, "/frontier_handoff_requested", 10
+        )
         self._navigation = ActionClient(
             self, NavigateThroughPoses, "navigate_through_poses"
         )
-        self._tf_buffer = Buffer()
+        self._tf_buffer = Buffer(
+            cache_time=Duration(seconds=120.0)
+        )
         self._tf_listener = TransformListener(self._tf_buffer, self)
         self._trace_path_pub = self.create_publisher(
             Path, "/robot_global_trace", 10
@@ -108,6 +158,10 @@ class ClockwiseWallTracer(Node):
         self.create_subscription(
             Bool, "/mapping_return_home", self._return_home_callback, 10
         )
+        self.create_subscription(
+            Bool, "/frontier_navigation_complete",
+            self._frontier_complete_callback, 10,
+        )
         self.create_timer(0.10, self._control)
 
     def _return_home_callback(self, message):
@@ -119,6 +173,23 @@ class ClockwiseWallTracer(Node):
             self._cmd.publish(Twist())
             self._active.publish(Bool(data=False))
 
+    def _frontier_complete_callback(self, message):
+        """Resume wall acquisition only after the requested frontier arrives."""
+        if not message.data or not self._frontier_handoff_active:
+            return
+        self._frontier_handoff_active = False
+        self._cooldown_until = None
+        self._alignment_complete = False
+        self._alignment_pending = False
+        self._alignment_claimed_at = None
+        self._trace_start_time = None
+        self._history.clear()
+        self._frontier_request_pub.publish(Bool(data=False))
+        self._set_state("frontier_reached_reenable_wall_alignment")
+        self.get_logger().info(
+            "Nearest frontier reached; wall alignment may take control again."
+        )
+
     def _scan_callback(self, message):
         self._scan = message
         if self._scan_start_time is None:
@@ -129,6 +200,7 @@ class ClockwiseWallTracer(Node):
         self._pose = (
             message.pose.pose.position.x, message.pose.pose.position.y
         )
+        self._yaw = self._yaw_from_quaternion(message.pose.pose.orientation)
         if previous_pose is not None:
             travelled = math.hypot(
                 self._pose[0] - previous_pose[0],
@@ -167,13 +239,19 @@ class ClockwiseWallTracer(Node):
                 self._trace_path.poses = self._trace_path.poses[-maximum:]
             self._trace_path.header.stamp = message.header.stamp
             self._trace_path_pub.publish(self._trace_path)
+            self._travel_history.append((
+                self.get_clock().now(), self._pose[0], self._pose[1]
+            ))
+            self._travel_history = self._travel_history[-20000:]
 
     def _map_callback(self, message):
         values = np.asarray(message.data, dtype=np.int16)
         free = np.count_nonzero((values >= 0) & (values <= 20))
         self._free_area = free * message.info.resolution ** 2
 
-    def _yield_to_global_planner(self, reason, now):
+    def _yield_to_global_planner(
+        self, reason, now, state="yield_to_global_exploration"
+    ):
         cooldown = float(self.get_parameter("global_planning_cooldown").value)
         self._cooldown_until = now + Duration(seconds=cooldown)
         self._trace_start_time = None
@@ -181,7 +259,9 @@ class ClockwiseWallTracer(Node):
         self._alignment_complete = False
         self._alignment_pending = False
         self._alignment_claimed_at = None
-        self._set_state("yield_to_global_exploration")
+        self._frontier_handoff_active = True
+        self._frontier_request_pub.publish(Bool(data=True))
+        self._set_state(state)
         self.get_logger().info(
             f"Yielding clockwise tracing for {cooldown:.0f} s: {reason}."
         )
@@ -220,10 +300,52 @@ class ClockwiseWallTracer(Node):
         self._trace_start_free_area = self._free_area
         return False
 
+    def _current_path_is_retraced(self, now):
+        """Require a sustained overlap with older travel, not one crossing."""
+        if self._last_retrace_check is not None and (
+            now - self._last_retrace_check
+        ).nanoseconds < 1e9:
+            return False
+        self._last_retrace_check = now
+        minimum_length = float(
+            self.get_parameter("retrace_minimum_length").value
+        )
+        if len(self._travel_history) < 3:
+            return False
+        recent = [self._travel_history[-1]]
+        length = 0.0
+        for point in reversed(self._travel_history[:-1]):
+            newest = recent[-1]
+            length += math.hypot(point[1] - newest[1], point[2] - newest[2])
+            recent.append(point)
+            if length >= minimum_length:
+                break
+        if length < minimum_length:
+            return False
+        minimum_age = float(self.get_parameter("retrace_minimum_age").value)
+        old = np.asarray([
+            (x, y) for stamp, x, y in self._travel_history
+            if (now - stamp).nanoseconds / 1e9 >= minimum_age
+        ], dtype=np.float64)
+        if not len(old):
+            return False
+        radius_squared = float(
+            self.get_parameter("retrace_radius").value
+        ) ** 2
+        matches = 0
+        for _, x, y in recent:
+            offsets = old - np.asarray((x, y))
+            if np.any(np.sum(offsets * offsets, axis=1) <= radius_squared):
+                matches += 1
+        ratio = matches / len(recent)
+        required = float(self.get_parameter("retrace_overlap_ratio").value)
+        return ratio >= required
+
     def _set_state(self, state):
         if state != self._state:
             self._state = state
             self.get_logger().info(f"Clockwise tracing behavior: {state}.")
+        self._state_pub.publish(String(data=state))
 
     def _right_wall(self, ranges, angles):
         valid = np.isfinite(ranges)
@@ -301,11 +423,35 @@ class ClockwiseWallTracer(Node):
             self.get_parameter("minimum_handoff_wall_length").value
         )
 
+    @classmethod
+    def _wall_body_offset(cls, relative_wall_yaw):
+        """Distance from LiDAR to the footprint point nearest a right wall."""
+        # The fitted wall's left normal points from the wall to the robot.
+        normal_x = -math.sin(relative_wall_yaw)
+        normal_y = math.cos(relative_wall_yaw)
+        nearest_projection = min(
+            normal_x * x + normal_y * y
+            for x, y in cls._FOOTPRINT_FROM_LASER
+        )
+        return max(0.0, -nearest_projection)
+
+    @classmethod
+    def _wall_clearance(cls, lidar_distance, relative_wall_yaw):
+        """Return closest footprint-to-wall clearance for a fitted line."""
+        return lidar_distance - cls._wall_body_offset(relative_wall_yaw)
+
+    def _target_lidar_wall_distance(self, relative_wall_yaw):
+        """Convert configured body clearance into the equivalent LiDAR range."""
+        return (
+            float(self.get_parameter("target_wall_distance").value)
+            + self._wall_body_offset(relative_wall_yaw)
+        )
+
     def _wall_is_handoff_eligible(self, wall):
         if not self._wall_is_long_enough(wall):
             return False
         distance, relative_yaw, _ = wall
-        target = float(self.get_parameter("target_wall_distance").value)
+        target = self._target_lidar_wall_distance(relative_yaw)
         return (
             abs(distance - target) <= float(
                 self.get_parameter("handoff_distance_tolerance").value
@@ -336,6 +482,189 @@ class ClockwiseWallTracer(Node):
         return len(side) >= 8 and float(np.percentile(side, 25.0)) <= float(
             self.get_parameter("dead_end_side_max_distance").value
         )
+
+    @staticmethod
+    def _sector_distance(ranges, angles, lower_degrees, upper_degrees):
+        selected = (
+            np.isfinite(ranges)
+            & (angles > math.radians(lower_degrees))
+            & (angles < math.radians(upper_degrees))
+        )
+        values = ranges[selected]
+        return float(np.percentile(values, 25.0)) if len(values) >= 3 else math.inf
+
+    @classmethod
+    def _sector_body_clearance(
+        cls, ranges, angles, lower_degrees, upper_degrees, percentile=25.0
+    ):
+        """Closest outside-footprint clearance within a LiDAR sector."""
+        selected = (
+            np.isfinite(ranges)
+            & (angles > math.radians(lower_degrees))
+            & (angles < math.radians(upper_degrees))
+        )
+        if np.count_nonzero(selected) < 3:
+            return math.inf
+        sector_angles = angles[selected]
+        support = np.asarray([
+            max(
+                math.cos(angle) * x + math.sin(angle) * y
+                for x, y in cls._FOOTPRINT_FROM_LASER
+            )
+            for angle in sector_angles
+        ])
+        clearances = ranges[selected] - support
+        return float(np.percentile(clearances, percentile))
+
+    @staticmethod
+    def _clockwise_angle_from(start, current):
+        """Positive clockwise rotation from start to current, in radians."""
+        # Normalize to the shortest signed rotation. Tiny counterclockwise
+        # odometry noise must not wrap to almost 2*pi and complete a turn in
+        # one control tick.
+        signed = math.atan2(math.sin(start - current), math.cos(start - current))
+        return max(0.0, signed)
+
+    def _outside_corner_detected(self, ranges, angles, front_distance, now):
+        """Latch a convex right corner after the nearby side wall ends."""
+        # A direct-right wall is parallel to the robot, so include the right
+        # footprint extent when converting desired body clearance to range.
+        target = self._target_lidar_wall_distance(0.0)
+        margin = float(self.get_parameter("outside_corner_loss_margin").value)
+        side_distance = self._sector_distance(ranges, angles, -105.0, -75.0)
+        side_present = side_distance <= target + margin
+        if side_present:
+            self._right_side_seen = True
+            self._right_side_lost_since = None
+            return False
+        if not self._right_side_seen or front_distance < float(
+            self.get_parameter("front_stop_distance").value
+        ):
+            self._right_side_lost_since = None
+            return False
+        if self._right_side_lost_since is None:
+            self._right_side_lost_since = now
+            return False
+        confirmation = float(
+            self.get_parameter("outside_corner_confirmation_time").value
+        )
+        return (now - self._right_side_lost_since).nanoseconds >= confirmation * 1e9
+
+    def _narrow_corridor_ahead(self, ranges, angles, now):
+        """Return the entrance distance/width of an unsafe forward passage."""
+        valid = np.isfinite(ranges)
+        x = ranges[valid] * np.cos(angles[valid])
+        y = ranges[valid] * np.sin(angles[valid])
+        lookahead = float(self.get_parameter("corridor_lookahead").value)
+        minimum_width = float(
+            self.get_parameter("minimum_corridor_width").value
+        )
+        # Measure paired wall returns in short forward slices. Requiring two
+        # adjacent narrow slices prevents a chair leg or a single noisy beam
+        # from becoming a virtual wall.
+        slice_depth = 0.35
+        estimates = []
+        for distance in np.arange(0.70, lookahead + 0.01, 0.35):
+            nearby = np.abs(x - distance) <= slice_depth
+            left = y[nearby & (y > 0.30)]
+            right = y[nearby & (y < -0.30)]
+            if len(left) < 2 or len(right) < 2:
+                continue
+            width = float(np.percentile(left, 20.0)) - float(
+                np.percentile(right, 80.0)
+            )
+            estimates.append((distance, width))
+        candidate = None
+        for first, second in zip(estimates, estimates[1:]):
+            adjacent = second[0] - first[0] <= 0.71
+            both_narrow = (
+                first[1] < minimum_width and second[1] < minimum_width
+            )
+            if adjacent and both_narrow:
+                candidate = (first[0], max(first[1], second[1]))
+                break
+        if candidate is None:
+            self._narrow_corridor_since = None
+            self._narrow_corridor_width = None
+            return None
+        if self._narrow_corridor_since is None:
+            self._narrow_corridor_since = now
+            self._narrow_corridor_width = candidate[1]
+            return None
+        self._narrow_corridor_width = min(
+            self._narrow_corridor_width, candidate[1]
+        )
+        confirmation = float(
+            self.get_parameter("narrow_corridor_confirmation_time").value
+        )
+        elapsed_ns = (now - self._narrow_corridor_since).nanoseconds
+        if elapsed_ns < confirmation * 1e9:
+            return None
+        return candidate[0], self._narrow_corridor_width
+
+    def _approaching_prior_trace(self, now):
+        """True near an older recorded pose, excluding the current trace tail."""
+        if self._pose is None:
+            return False
+        radius = float(self.get_parameter("revisited_right_turn_radius").value)
+        age_limit = float(
+            self.get_parameter("revisited_right_turn_minimum_age").value
+        )
+        return any(
+            (now - stamp).nanoseconds >= age_limit * 1e9
+            and math.hypot(self._pose[0] - x, self._pose[1] - y) <= radius
+            for stamp, x, y in self._history
+        )
+
+    def _start_outside_corner(self, now, reason):
+        self._outside_corner_start_yaw = self._yaw
+        self._outside_corner_started_at = now
+        self._set_state("outside_corner_turn_right_90")
+        self.get_logger().info(reason)
+
+    def _run_outside_corner(self, ranges, angles, now):
+        """Follow a committed clockwise arc until the new wall is acquired."""
+        command = Twist()
+        command.linear.x = float(
+            self.get_parameter("outside_corner_linear_speed").value
+        )
+        command.angular.z = -float(
+            self.get_parameter("outside_corner_turn_speed").value
+        )
+        turned = (
+            self._clockwise_angle_from(self._outside_corner_start_yaw, self._yaw)
+            if self._yaw is not None and self._outside_corner_start_yaw is not None
+            else 0.0
+        )
+        elapsed = (
+            (now - self._outside_corner_started_at).nanoseconds / 1e9
+            if self._outside_corner_started_at is not None else 0.0
+        )
+        target_angle = float(
+            self.get_parameter("outside_corner_turn_angle").value
+        )
+        timeout = float(self.get_parameter("outside_corner_timeout").value)
+        # Do not accept the old wall behind the robot as reacquisition.  The
+        # new continuous face must appear in the direct-right sector after a
+        # substantial part of the turn has completed.
+        side_distance = self._sector_distance(ranges, angles, -105.0, -75.0)
+        target_distance = self._target_lidar_wall_distance(0.0)
+        acquired = turned >= 0.80 * target_angle and side_distance <= (
+            target_distance
+            + float(self.get_parameter("outside_corner_loss_margin").value)
+        )
+        if acquired or turned >= target_angle or elapsed >= timeout:
+            self._outside_corner_start_yaw = None
+            self._outside_corner_started_at = None
+            self._right_side_lost_since = None
+            self._right_side_seen = acquired
+            self._progress_pose, self._progress_time = self._pose, now
+            commitment = float(
+                self.get_parameter("right_turn_commitment_time").value
+            )
+            self._right_turn_priority_until = now + Duration(seconds=commitment)
+            self._set_state("acquire_right_wall")
+        return command
 
     def _start_dead_end_escape(self):
         depth = max(
@@ -384,13 +713,15 @@ class ClockwiseWallTracer(Node):
         distance, relative_wall_yaw, wall_span = wall
         robot_yaw = self._yaw_from_quaternion(transform.transform.rotation)
         # The fitted wall direction points forward. Its left normal points
-        # from a right-side wall toward the robot. Move along that normal until
-        # the robot center is exactly target_wall_distance from the wall.
+        # from a right-side wall toward the robot. Project the whole footprint
+        # on that normal so Nav2 positions the nearest body point—not the
+        # LiDAR or base origin—at the configured clearance.
         normal_x = -math.sin(relative_wall_yaw)
         normal_y = math.cos(relative_wall_yaw)
-        correction = float(
-            self.get_parameter("target_wall_distance").value
-        ) - distance
+        target_lidar_distance = self._target_lidar_wall_distance(
+            relative_wall_yaw
+        )
+        correction = target_lidar_distance - distance
         local_x = normal_x * correction
         local_y = normal_y * correction
         goal_yaw = robot_yaw + relative_wall_yaw
@@ -439,10 +770,13 @@ class ClockwiseWallTracer(Node):
         self._alignment_pending = True
         self._set_state("nav2_align_parallel_to_right_wall")
         self.get_logger().info(
-            f"Nav2 aligning to the nearby right wall at {distance:.2f} m, then "
+            f"Nav2 aligning to a right wall with "
+            f"{self._wall_clearance(distance, relative_wall_yaw):.2f} m "
+            f"nearest-body clearance, then "
             f"driving {straight_distance:.1f} m parallel at "
             f"{float(self.get_parameter('target_wall_distance').value):.2f} m "
-            f"along a {wall_span:.1f} m LiDAR wall fit."
+            f"body clearance along a {wall_span:.1f} m LiDAR wall fit. "
+            "Nav2 now has exclusive cmd_vel ownership until this goal ends."
         )
         future = self._navigation.send_goal_async(request)
         future.add_done_callback(self._alignment_goal_response)
@@ -526,17 +860,33 @@ class ClockwiseWallTracer(Node):
             self._cmd.publish(Twist())
             return
         if self._cooldown_until is not None:
+            if self._frontier_handoff_active:
+                self.get_logger().warn(
+                    "Frontier handoff timed out; allowing wall alignment to "
+                    "retry so navigation cannot remain idle.",
+                    throttle_duration_sec=5.0,
+                )
+                self._frontier_handoff_active = False
+                self._frontier_request_pub.publish(Bool(data=False))
             self._cooldown_until = None
             self._progress_pose, self._progress_time = self._pose, now
         scan = self._scan
         ranges = np.asarray(scan.ranges, dtype=np.float64)
         angles = scan.angle_min + np.arange(len(ranges)) * scan.angle_increment
-        front = ranges[np.abs(angles) < math.radians(22.5)]
-        front = front[np.isfinite(front)]
-        front_distance = float(np.min(front)) if len(front) else scan.range_max
+        front_distance = self._sector_body_clearance(
+            ranges, angles, -22.5, 22.5, percentile=0.0
+        )
         wall = self._right_wall(ranges, angles)
         if (bool(self.get_parameter("align_with_nav2").value)
                 and not self._alignment_complete):
+            # Once the action is submitted, Nav2 must be the sole velocity
+            # owner. Publishing Twist() here used to race Nav2's nonzero
+            # commands at 10 Hz, leaving the Gazebo wheels almost stationary
+            # until the progress checker aborted alignment and recovery.
+            if self._alignment_pending:
+                self._active.publish(Bool(data=True))
+                self._set_state("nav2_align_parallel_to_right_wall")
+                return
             if wall is None:
                 self._active.publish(Bool(data=False))
                 self._set_state("waiting_for_right_wall_to_align")
@@ -546,6 +896,31 @@ class ClockwiseWallTracer(Node):
                 self._set_state("global_planning_until_wall_exceeds_5m")
                 return
             self._active.publish(Bool(data=True))
+            wall_clearance = self._wall_clearance(wall[0], wall[1])
+            escape_clearance = float(
+                self.get_parameter("alignment_escape_clearance").value
+            )
+            if wall_clearance < escape_clearance:
+                # Nav2 correctly refuses every trajectory when its padded
+                # footprint begins in collision. Rotate counterclockwise under
+                # direct control first; the forward footprint swings away from
+                # the right wall without advancing farther into it.
+                self._alignment_claimed_at = None
+                self._set_state("wall_clearance_escape_before_nav2")
+                command = Twist()
+                command.angular.z = float(
+                    self.get_parameter("turn_speed").value
+                )
+                self._cmd.publish(command)
+                self.get_logger().warn(
+                    f"Only {wall_clearance:.2f} m body clearance; rotating "
+                    f"away from the wall until {escape_clearance:.2f} m "
+                    "before asking Nav2 to align.",
+                    throttle_duration_sec=2.0,
+                )
+                return
+            # Stop direct wall control only during the short settling period;
+            # _start_wall_alignment() transfers command ownership to Nav2.
             self._cmd.publish(Twist())
             if self._alignment_claimed_at is None:
                 self._alignment_claimed_at = now
@@ -565,13 +940,32 @@ class ClockwiseWallTracer(Node):
             and (now - self._last_wall_time).nanoseconds / 1e9
             <= float(self.get_parameter("wall_timeout").value)
         )
+        outside_corner_active = self._outside_corner_start_yaw is not None
+        if outside_corner_active:
+            recently_seen = True
         if self._dead_end_escape_active:
             recently_seen = True
         stale_reason = (
             self._exploration_is_stale(now)
-            if recently_seen and not self._dead_end_escape_active
+            if (recently_seen and not self._dead_end_escape_active
+                and not outside_corner_active)
             else False
         )
+        retraced_path = (
+            self._current_path_is_retraced(now)
+            if (recently_seen and not self._dead_end_escape_active
+                and not outside_corner_active)
+            else False
+        )
+        if retraced_path:
+            self._yield_to_global_planner(
+                "the current path substantially overlaps older robot travel",
+                now,
+                state="retrace_detected_request_nearest_frontier",
+            )
+            self._active.publish(Bool(data=False))
+            self._cmd.publish(Twist())
+            return
         if stale_reason:
             self._yield_to_global_planner(stale_reason, now)
             self._active.publish(Bool(data=False))
@@ -595,13 +989,88 @@ class ClockwiseWallTracer(Node):
                 self._progress_pose, self._progress_time = self._pose, now
                 self._set_state("acquire_right_wall")
             elif len(rear) and np.min(rear) < 0.65:
-                self._set_state("inside_corner_left")
+                self._set_state("inside_corner_left_90")
             else:
                 command.linear.x = -float(
                     self.get_parameter("backup_speed").value
                 )
                 self._cmd.publish(command)
                 return
+
+        narrow_corridor = self._narrow_corridor_ahead(ranges, angles, now)
+        if narrow_corridor is not None:
+            entrance_distance, measured_width = narrow_corridor
+            # Treat the entrance plane exactly like a front obstacle. The
+            # normal inside-corner left turn therefore keeps the chassis out.
+            # Corridor entrance distance is measured from the LiDAR. Convert
+            # it to clearance from the foremost footprint point.
+            entrance_clearance = entrance_distance - max(
+                x for x, _ in self._FOOTPRINT_FROM_LASER
+            )
+            front_distance = min(front_distance, entrance_clearance)
+            if front_distance < float(
+                self.get_parameter("front_stop_distance").value
+            ):
+                self._outside_corner_start_yaw = None
+                self._outside_corner_started_at = None
+                self._right_side_lost_since = None
+                self._set_state("narrow_corridor_virtual_wall")
+                command.linear.x = 0.0
+                command.angular.z = float(
+                    self.get_parameter("turn_speed").value
+                )
+                minimum_width = float(
+                    self.get_parameter("minimum_corridor_width").value
+                )
+                self.get_logger().warn(
+                    f"Blocking {measured_width:.2f} m corridor at "
+                    f"{entrance_distance:.2f} m; minimum safe width is "
+                    f"{minimum_width:.2f} m.",
+                    throttle_duration_sec=2.0,
+                )
+                self._cmd.publish(command)
+                return
+
+        if outside_corner_active:
+            self._set_state("outside_corner_turn_right_90")
+            self._cmd.publish(self._run_outside_corner(ranges, angles, now))
+            return
+
+        right_front = self._sector_body_clearance(
+            ranges, angles, -70.0, -15.0
+        )
+        revisited_right_turn = (
+            self._yaw is not None
+            and self._approaching_prior_trace(now)
+            and front_distance < 1.5 * float(
+                self.get_parameter("front_stop_distance").value
+            )
+            and front_distance > float(
+                self.get_parameter("emergency_front_distance").value
+            )
+            and right_front >= float(
+                self.get_parameter("revisited_right_turn_clearance").value
+            )
+        )
+        if revisited_right_turn:
+            self._start_outside_corner(
+                now,
+                "Previously traveled approach with an open right branch; "
+                "giving the committed clockwise turn priority.",
+            )
+            self._cmd.publish(self._run_outside_corner(ranges, angles, now))
+            return
+
+        if self._outside_corner_detected(
+            ranges, angles, front_distance, now
+        ) and self._yaw is not None:
+            self._start_outside_corner(
+                now,
+                "Right wall edge confirmed; committing to the continuous "
+                "outside-corner turn.",
+            )
+            self._cmd.publish(self._run_outside_corner(ranges, angles, now))
+            return
 
         dead_end = (
             not self._dead_end_escape_active
@@ -613,24 +1082,45 @@ class ClockwiseWallTracer(Node):
         )
         if dead_end:
             self._start_dead_end_escape()
+            self._set_state("inside_dead_end_turn_180")
+            command.angular.z = float(self.get_parameter("turn_speed").value)
+            self._cmd.publish(command)
+            return
 
         if self._update_progress():
             self._backup_start = self._pose
             self._set_state("backup")
             command.linear.x = -float(self.get_parameter("backup_speed").value)
+        elif (
+            front_distance < float(
+                self.get_parameter("front_stop_distance").value
+            )
+            and self._right_turn_priority_until is not None
+            and now < self._right_turn_priority_until
+            and front_distance > float(
+                self.get_parameter("emergency_front_distance").value
+            )
+        ):
+            self._set_state("right_turn_commitment_guard")
+            command.linear.x = float(
+                self.get_parameter("outside_corner_linear_speed").value
+            )
+            command.angular.z = -float(
+                self.get_parameter("outside_corner_turn_speed").value
+            )
         elif front_distance < float(
             self.get_parameter("front_stop_distance").value
         ):
-            self._set_state("inside_corner_left")
+            self._set_state("inside_corner_left_90")
             command.linear.x = 0.04
             command.angular.z = float(self.get_parameter("turn_speed").value)
         elif wall is None:
-            self._set_state("outside_corner_reacquire_right")
+            self._set_state("outside_corner_reacquire_right_270")
             command.linear.x = 0.08
             command.angular.z = -float(self.get_parameter("turn_speed").value)
         else:
             distance, wall_yaw, _ = wall
-            target = float(self.get_parameter("target_wall_distance").value)
+            target = self._target_lidar_wall_distance(wall_yaw)
             angular = (
                 float(self.get_parameter("heading_gain").value) * wall_yaw
                 - float(self.get_parameter("distance_gain").value)
