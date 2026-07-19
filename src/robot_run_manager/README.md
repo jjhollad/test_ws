@@ -32,6 +32,8 @@ robot when replaying.
   follows collinear 0.5 m waypoints for 3 m before direct tracing takes over;
 - automatic mission completion after sustained frontier exhaustion: wall
   following stops, Nav2 returns to the recorded start pose, and mapping ends;
+- novelty-biased global planning that rewards reachable unknown-space gain and
+  penalizes candidate route metres overlapping the robot's travel history;
 - one-click wall-mapping bringup starts the corridor world, RViz, SLAM, Nav2,
   chassis-aware LiDAR filtering, the global planner, and wall following;
 - timestamped rosbag runs with JSON metadata and CSV event markers;

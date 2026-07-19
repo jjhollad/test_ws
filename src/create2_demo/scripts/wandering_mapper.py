@@ -3,7 +3,7 @@
 
 import heapq
 import math
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -39,7 +39,9 @@ class WanderingMapper(Node):
             "clearance_weight": 5.0, "completion_cycles": 4,
             "minimum_goal_distance": 1.80, "minimum_route_length": 2.00,
             "minimum_route_poses": 3, "information_radius": 1.50,
-            "information_weight": 2.0, "travel_weight": 0.20,
+            "information_weight": 4.0, "frontier_bonus": 6.0,
+            "travel_weight": 0.20, "revisit_weight": 3.0,
+            "visited_radius": 0.75, "visit_record_spacing": 0.25,
             # A new SLAM map is usually only a small free patch.  Requiring a
             # long first route creates a deadlock: exploration cannot move
             # until the map grows, and the map cannot grow until exploration
@@ -92,6 +94,7 @@ class WanderingMapper(Node):
         self._empty_cycles = 0
         self._origin = None
         self._returning_home = False
+        self._visited_world: List[Tuple[float, float]] = []
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
         self._action = ActionClient(self, NavigateThroughPoses, "navigate_through_poses")
@@ -517,10 +520,17 @@ class WanderingMapper(Node):
         ).reshape(-1)
         wall_yaw = math.atan2(float(vy), float(vx))
         reverse_yaw = wall_yaw + math.pi
-        difference = lambda angle: abs(math.atan2(
-            math.sin(angle - travel_yaw), math.cos(angle - travel_yaw)
-        ))
-        return wall_yaw if difference(wall_yaw) <= difference(reverse_yaw) else reverse_yaw
+
+        def difference(angle):
+            return abs(math.atan2(
+                math.sin(angle - travel_yaw), math.cos(angle - travel_yaw)
+            ))
+
+        return (
+            wall_yaw
+            if difference(wall_yaw) <= difference(reverse_yaw)
+            else reverse_yaw
+        )
 
     def _poses(self, message, path):
         spacing = float(self.get_parameter("waypoint_spacing").value) / message.info.resolution
@@ -573,6 +583,45 @@ class WanderingMapper(Node):
             for first, second in zip(path[:-1], path[1:])
         )
 
+    def _record_visit(self, x, y):
+        """Remember physical robot travel without tying it to map indices."""
+        spacing = float(self.get_parameter("visit_record_spacing").value)
+        if not self._visited_world or math.hypot(
+            x - self._visited_world[-1][0], y - self._visited_world[-1][1]
+        ) >= spacing:
+            self._visited_world.append((x, y))
+            self._visited_world = self._visited_world[-20000:]
+
+    def _visited_mask(self, message):
+        """Rasterize travel history into the current, possibly growing map."""
+        mask = np.zeros(
+            (message.info.height, message.info.width), dtype=np.uint8
+        )
+        for x, y in self._visited_world:
+            cell = self._world_to_grid(message, x, y)
+            if self._inside(mask, cell):
+                mask[cell] = 1
+        radius = max(1, int(
+            float(self.get_parameter("visited_radius").value)
+            / message.info.resolution
+        ))
+        kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1)
+        )
+        return cv2.dilate(mask, kernel) > 0
+
+    @staticmethod
+    def _route_revisit_distance(path, visited, resolution):
+        """Return route metres lying in previously traveled territory."""
+        revisited = 0.0
+        for first, second in zip(path[:-1], path[1:]):
+            segment = resolution * math.hypot(
+                second[0] - first[0], second[1] - first[1]
+            )
+            if visited[second]:
+                revisited += segment
+        return revisited
+
     @staticmethod
     def _rolling_horizon(path, resolution, horizon):
         """Return only the next part of a route, for frequent SLAM replans."""
@@ -594,12 +643,16 @@ class WanderingMapper(Node):
         if (self._busy and not preempting) or self._map is None:
             return
         if not self._action.server_is_ready():
-            self.get_logger().warn("Waiting for active Nav2 action server.", throttle_duration_sec=5.0)
+            self.get_logger().warn(
+                "Waiting for active Nav2 action server.",
+                throttle_duration_sec=5.0,
+            )
             return
         world = self._robot_world()
         if world is None:
             return
         robot_x, robot_y, robot_yaw = world
+        self._record_visit(robot_x, robot_y)
         if self._origin is None:
             self._origin = (robot_x, robot_y, robot_yaw)
             self.get_logger().info(
@@ -609,9 +662,13 @@ class WanderingMapper(Node):
         observed_robot = self._world_to_grid(self._map, robot_x, robot_y)
         masks = self._masks(self._map, observed_robot)
         if masks is None:
-            self.get_logger().warn("Robot is not in mapped traversable space.", throttle_duration_sec=5.0)
+            self.get_logger().warn(
+                "Robot is not in mapped traversable space.",
+                throttle_duration_sec=5.0,
+            )
             return
         values, free, clearance, reachable, robot = masks
+        visited = self._visited_mask(self._map)
         lidar_corridor = self._lidar_corridor(
             self._map, values, robot_x, robot_y, robot_yaw
         )
@@ -656,7 +713,8 @@ class WanderingMapper(Node):
                     score = gain * 1000.0 + len(component) - distance
                 else:
                     score = (
-                        float(self.get_parameter("information_weight").value) * gain
+                        float(self.get_parameter("frontier_bonus").value)
+                        + float(self.get_parameter("information_weight").value) * gain
                         - float(self.get_parameter("travel_weight").value) * distance
                         + float(self.get_parameter("forward_weight").value)
                         * max(0.0, alignment)
@@ -730,7 +788,8 @@ class WanderingMapper(Node):
             (float(self.get_parameter("fallback_route_length").value), 1),
         )
         for minimum_length, minimum_poses in route_limits:
-            for _, goal, size, gain, distance, alignment in ranked[:12]:
+            viable = []
+            for base_score, goal, size, gain, distance, alignment in ranked[:12]:
                 raw = self._astar(
                     reachable, clearance, robot, goal,
                     self._map.info.resolution,
@@ -740,6 +799,12 @@ class WanderingMapper(Node):
                 )
                 if route_length < minimum_length:
                     continue
+                revisit_distance = self._route_revisit_distance(
+                    raw, visited, self._map.info.resolution
+                )
+                adjusted_score = base_score - float(
+                    self.get_parameter("revisit_weight").value
+                ) * revisit_distance
                 raw = self._rolling_horizon(
                     raw, self._map.info.resolution,
                     float(self.get_parameter("route_horizon").value),
@@ -752,9 +817,17 @@ class WanderingMapper(Node):
                     self._smooth(raw, reachable, self._map.info.resolution),
                 )
                 if len(poses) >= minimum_poses:
-                    chosen = goal, size, poses, gain, route_length
-                    break
-            if chosen is not None:
+                    viable.append((
+                        adjusted_score, goal, size, poses, gain,
+                        route_length, revisit_distance,
+                    ))
+            if viable:
+                _, goal, size, poses, gain, route_length, revisit_distance = max(
+                    viable, key=lambda candidate: candidate[0]
+                )
+                chosen = (
+                    goal, size, poses, gain, route_length, revisit_distance
+                )
                 break
         if chosen is None:
             if preview_only:
@@ -787,7 +860,7 @@ class WanderingMapper(Node):
                 self._send_return_home()
             return
         self._empty_cycles = 0
-        goal, size, poses, gain, route_length = chosen
+        goal, size, poses, gain, route_length, revisit_distance = chosen
         preview = Path()
         preview.header.frame_id = str(self.get_parameter("map_frame").value)
         preview.header.stamp = self.get_clock().now().to_msg()
@@ -818,7 +891,8 @@ class WanderingMapper(Node):
             self._force_least_explored = False
         self.get_logger().info(
             f"Exploring {size}-cell frontier ({gain:.1f} m^2 unknown) "
-            f"over {route_length:.1f} m using {len(poses)} smooth poses."
+            f"over {route_length:.1f} m using {len(poses)} smooth poses; "
+            f"{revisit_distance:.1f} m overlaps prior travel."
         )
         self._route_generation += 1
         generation = self._route_generation
