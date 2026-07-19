@@ -46,6 +46,33 @@ def generate_launch_description():
             "scan_topic: /scan", "scan_topic: /scan_clear"
         ).replace(
             "min_laser_range: 0.0", "min_laser_range: 0.12"
+        ).replace(
+            "map_update_interval: 1.0",
+            "map_update_interval: __SLAM_MAP_UPDATE_INTERVAL__",
+        ).replace(
+            "    resolution: 0.05\n",
+            "    resolution: __SLAM_RESOLUTION__\n",
+        ).replace(
+            "minimum_travel_distance: 0.5",
+            "minimum_travel_distance: __SLAM_MINIMUM_TRAVEL_DISTANCE__",
+        ).replace(
+            "minimum_travel_heading: 0.5",
+            "minimum_travel_heading: __SLAM_MINIMUM_TRAVEL_HEADING__",
+        ).replace(
+            "scan_buffer_size: 10",
+            "scan_buffer_size: __SLAM_SCAN_BUFFER_SIZE__",
+        ).replace(
+            "scan_buffer_maximum_scan_distance: 10.0",
+            "scan_buffer_maximum_scan_distance: __SLAM_SCAN_BUFFER_DISTANCE__",
+        ).replace(
+            "link_match_minimum_response_fine: 0.1",
+            "link_match_minimum_response_fine: __SLAM_LINK_MATCH_RESPONSE__",
+        ).replace(
+            "link_scan_maximum_distance: 1.5",
+            "link_scan_maximum_distance: __SLAM_LINK_SCAN_DISTANCE__",
+        ).replace(
+            "loop_search_maximum_distance: 3.0",
+            "loop_search_maximum_distance: __SLAM_LOOP_SEARCH_DISTANCE__",
         )
 
     nav2_params = ReplaceString(
@@ -80,6 +107,31 @@ def generate_launch_description():
             "    velocity_timeout: 1.0": (
                 "    velocity_timeout: 1.0\n\n" + slam_parameters.rstrip()
             ),
+            "__SLAM_MAP_UPDATE_INTERVAL__": LaunchConfiguration(
+                "slam_map_update_interval"
+            ),
+            "__SLAM_RESOLUTION__": LaunchConfiguration("slam_resolution"),
+            "__SLAM_MINIMUM_TRAVEL_DISTANCE__": LaunchConfiguration(
+                "slam_minimum_travel_distance"
+            ),
+            "__SLAM_MINIMUM_TRAVEL_HEADING__": LaunchConfiguration(
+                "slam_minimum_travel_heading"
+            ),
+            "__SLAM_SCAN_BUFFER_SIZE__": LaunchConfiguration(
+                "slam_scan_buffer_size"
+            ),
+            "__SLAM_SCAN_BUFFER_DISTANCE__": LaunchConfiguration(
+                "slam_scan_buffer_distance"
+            ),
+            "__SLAM_LINK_MATCH_RESPONSE__": LaunchConfiguration(
+                "slam_link_match_response"
+            ),
+            "__SLAM_LINK_SCAN_DISTANCE__": LaunchConfiguration(
+                "slam_link_scan_distance"
+            ),
+            "__SLAM_LOOP_SEARCH_DISTANCE__": LaunchConfiguration(
+                "slam_loop_search_distance"
+            ),
             # Exploration goals are positional. Accept any final orientation so
             # DWB does not spin in place trying to match a frontier tangent.
             "      stateful: True": "      stateful: False",
@@ -102,7 +154,10 @@ def generate_launch_description():
     spawn_robot = Node(
         package="gazebo_ros",
         executable="spawn_entity.py",
-        arguments=["-entity", "rectangular_sweeper", "-topic", "robot_description", "-x", "-2.0", "-y", "-0.5", "-z", "0.01"],
+        arguments=[
+            "-entity", "rectangular_sweeper", "-topic", "robot_description",
+            "-x", "-2.0", "-y", "-0.5", "-z", "0.01",
+        ],
         output="screen",
     )
     nav2_bringup = IncludeLaunchDescription(
@@ -139,12 +194,25 @@ def generate_launch_description():
         DeclareLaunchArgument("wall_evaluation", default_value="25.0"),
         DeclareLaunchArgument("wall_cooldown", default_value="300.0"),
         DeclareLaunchArgument("start_wall_follower", default_value="true"),
+        DeclareLaunchArgument("slam_map_update_interval", default_value="0.5"),
+        DeclareLaunchArgument("slam_resolution", default_value="0.05"),
+        DeclareLaunchArgument("slam_minimum_travel_distance", default_value="0.15"),
+        DeclareLaunchArgument("slam_minimum_travel_heading", default_value="0.10"),
+        DeclareLaunchArgument("slam_scan_buffer_size", default_value="15"),
+        DeclareLaunchArgument("slam_scan_buffer_distance", default_value="12.0"),
+        DeclareLaunchArgument("slam_link_match_response", default_value="0.15"),
+        DeclareLaunchArgument("slam_link_scan_distance", default_value="2.0"),
+        DeclareLaunchArgument("slam_loop_search_distance", default_value="4.0"),
         IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(os.path.join(gazebo_share, "launch", "gzserver.launch.py")),
+            PythonLaunchDescriptionSource(
+                os.path.join(gazebo_share, "launch", "gzserver.launch.py")
+            ),
             launch_arguments={"world": LaunchConfiguration("world")}.items(),
         ),
         IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(os.path.join(gazebo_share, "launch", "gzclient.launch.py")),
+            PythonLaunchDescriptionSource(
+                os.path.join(gazebo_share, "launch", "gzclient.launch.py")
+            ),
             condition=UnlessCondition(headless),
         ),
         Node(

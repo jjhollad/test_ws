@@ -368,6 +368,42 @@ TUNING_VARIABLES = {
         0.2, 4.0, 2.14, 2,
         'Collision-checked Nav2 backup distance after a confirmed physical stall.'
     ),
+    'slam_map_update_interval': (
+        'Map refresh interval', 'SLAM mapping', 0.20, 5.00, 0.50, 2,
+        'Seconds between published occupancy-map updates; lower is faster but uses more CPU.'
+    ),
+    'slam_resolution': (
+        'Map resolution', 'SLAM mapping', 0.03, 0.10, 0.05, 2,
+        'Map cell size in metres; smaller cells look sharper and cost more computation.'
+    ),
+    'slam_minimum_travel_distance': (
+        'Scan travel distance', 'SLAM mapping', 0.05, 1.00, 0.15, 2,
+        'Minimum robot translation before SLAM processes another scan.'
+    ),
+    'slam_minimum_travel_heading': (
+        'Scan heading change', 'SLAM mapping', 0.02, 0.80, 0.10, 2,
+        'Minimum rotation in radians before SLAM processes another scan.'
+    ),
+    'slam_scan_buffer_size': (
+        'Scan buffer size', 'SLAM mapping', 5, 50, 15, 0,
+        'Recent scans retained for matching; larger improves context but costs memory and CPU.'
+    ),
+    'slam_scan_buffer_distance': (
+        'Scan buffer distance', 'SLAM mapping', 3.0, 20.0, 12.0, 1,
+        'Maximum travel distance represented by scans retained in the matching buffer.'
+    ),
+    'slam_link_match_response': (
+        'Fine link-match threshold', 'SLAM mapping', 0.05, 0.80, 0.15, 2,
+        'Minimum fine scan-match confidence; lower accepts more matches and more risk.'
+    ),
+    'slam_link_scan_distance': (
+        'Link scan distance', 'SLAM mapping', 0.5, 5.0, 2.0, 1,
+        'Maximum distance between scans considered for local pose-graph links.'
+    ),
+    'slam_loop_search_distance': (
+        'Loop search distance', 'SLAM mapping', 1.0, 12.0, 4.0, 1,
+        'Radius searched for loop closures; larger corrects longer loops at greater cost.'
+    ),
 }
 
 
@@ -666,6 +702,16 @@ class RunManagerWindow(QMainWindow):
             f'{self._configuration_value("target_wall_distance")}'
         )
         return arguments
+
+    def _slam_launch_arguments(self):
+        keys = (
+            'slam_map_update_interval', 'slam_resolution',
+            'slam_minimum_travel_distance', 'slam_minimum_travel_heading',
+            'slam_scan_buffer_size', 'slam_scan_buffer_distance',
+            'slam_link_match_response', 'slam_link_scan_distance',
+            'slam_loop_search_distance',
+        )
+        return [f'{key}:={self._configuration_value(key)}' for key in keys]
 
     def _role_changed(self):
         self.preflight_passed = False
@@ -1194,6 +1240,7 @@ class RunManagerWindow(QMainWindow):
                 'headless:=True',
                 'use_rviz:=True',
                 'start_wall_follower:=false',
+                *self._slam_launch_arguments(),
             ],
         )
         QTimer.singleShot(3000, self.open_gazebo)
