@@ -6,7 +6,7 @@ import math
 import cv2
 import numpy as np
 import rclpy
-from nav2_msgs.action import NavigateToPose
+from nav2_msgs.action import NavigateThroughPoses
 from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
 from rclpy.time import Time
@@ -47,6 +47,10 @@ class ClockwiseWallTracer(Node):
             "trace_path_maximum_poses": 20000,
             "align_with_nav2": True,
             "alignment_settle_time": 0.75,
+            "alignment_lead_in": 0.60,
+            "nav2_wall_follow_distance": 3.0,
+            "wall_fit_max_range": 3.0,
+            "wall_fit_depth": 0.75,
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value)
@@ -73,7 +77,9 @@ class ClockwiseWallTracer(Node):
         self._trace_path.header.frame_id = "odom"
         self._cmd = self.create_publisher(Twist, "/cmd_vel_nav", 10)
         self._active = self.create_publisher(Bool, "/wall_tracing_active", 10)
-        self._navigation = ActionClient(self, NavigateToPose, "navigate_to_pose")
+        self._navigation = ActionClient(
+            self, NavigateThroughPoses, "navigate_through_poses"
+        )
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
         self._trace_path_pub = self.create_publisher(
@@ -184,9 +190,21 @@ class ClockwiseWallTracer(Node):
     def _right_wall(self, ranges, angles):
         valid = np.isfinite(ranges)
         x, y = ranges * np.cos(angles), ranges * np.sin(angles)
-        selected = valid & (angles < math.radians(-35)) & (
-            angles > math.radians(-125)
-        ) & (ranges < 5.0)
+        selected = (
+            valid
+            & (angles < math.radians(-35))
+            & (angles > math.radians(-125))
+            & (ranges < float(self.get_parameter("wall_fit_max_range").value))
+        )
+        side_ranges = ranges[selected]
+        if len(side_ranges) < 8:
+            return None
+        # Fit only the nearest coherent surface. This prevents a doorway or a
+        # farther parallel wall from pulling the startup heading off the wall
+        # immediately beside the robot.
+        near = float(np.percentile(side_ranges, 25.0))
+        depth = float(self.get_parameter("wall_fit_depth").value)
+        selected &= ranges <= near + depth
         points = np.column_stack((x[selected], y[selected]))
         if len(points) < 8:
             return None
@@ -236,29 +254,43 @@ class ClockwiseWallTracer(Node):
         ) - distance
         local_x = normal_x * correction
         local_y = normal_y * correction
-        goal = PoseStamped()
-        goal.header.frame_id = "map"
-        goal.header.stamp = now.to_msg()
-        goal.pose.position.x = (
-            transform.transform.translation.x
-            + math.cos(robot_yaw) * local_x
-            - math.sin(robot_yaw) * local_y
-        )
-        goal.pose.position.y = (
-            transform.transform.translation.y
-            + math.sin(robot_yaw) * local_x
-            + math.cos(robot_yaw) * local_y
-        )
         goal_yaw = robot_yaw + relative_wall_yaw
-        goal.pose.orientation.z = math.sin(goal_yaw / 2.0)
-        goal.pose.orientation.w = math.cos(goal_yaw / 2.0)
-        request = NavigateToPose.Goal()
-        request.pose = goal
+        lead_in = float(self.get_parameter("alignment_lead_in").value)
+        straight_distance = float(
+            self.get_parameter("nav2_wall_follow_distance").value
+        )
+
+        def wall_pose(forward_distance):
+            pose = PoseStamped()
+            pose.header.frame_id = "map"
+            pose.header.stamp = now.to_msg()
+            route_x = local_x + math.cos(relative_wall_yaw) * forward_distance
+            route_y = local_y + math.sin(relative_wall_yaw) * forward_distance
+            pose.pose.position.x = (
+                transform.transform.translation.x
+                + math.cos(robot_yaw) * route_x
+                - math.sin(robot_yaw) * route_y
+            )
+            pose.pose.position.y = (
+                transform.transform.translation.y
+                + math.sin(robot_yaw) * route_x
+                + math.cos(robot_yaw) * route_y
+            )
+            pose.pose.orientation.z = math.sin(goal_yaw / 2.0)
+            pose.pose.orientation.w = math.cos(goal_yaw / 2.0)
+            return pose
+
+        request = NavigateThroughPoses.Goal()
+        request.poses = [
+            wall_pose(lead_in),
+            wall_pose(lead_in + straight_distance),
+        ]
         self._alignment_pending = True
         self._set_state("nav2_align_parallel_to_right_wall")
         self.get_logger().info(
-            f"Nav2 aligning to right wall at {distance:.2f} m; "
-            f"target is {float(self.get_parameter('target_wall_distance').value):.2f} m."
+            f"Nav2 aligning to the nearby right wall at {distance:.2f} m, then "
+            f"driving {straight_distance:.1f} m parallel at "
+            f"{float(self.get_parameter('target_wall_distance').value):.2f} m."
         )
         future = self._navigation.send_goal_async(request)
         future.add_done_callback(self._alignment_goal_response)

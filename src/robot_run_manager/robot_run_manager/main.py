@@ -105,8 +105,8 @@ ACTION_TOOLTIPS = {
     'Start Wandering Mapper': 'Start the OpenCV global frontier planner through Nav2.',
     'Stop Wandering Mapper': 'Cancel global frontier exploration and publish zero velocity.',
     'Start Wall Follower': (
-        'Start coordinated mapping; Nav2 first aligns parallel at the right-wall '
-        'offset, then tracing begins and eventually returns to the start pose.'
+        'Start coordinated mapping; Nav2 aligns to the nearest right wall, '
+        'drives a straight 3 m parallel segment, then hands off to tracing.'
     ),
     'Stop Wall Follower': 'Stop both coordinated planners and publish zero velocity.',
     'Start Simulation': (
