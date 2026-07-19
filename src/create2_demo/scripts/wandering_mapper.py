@@ -67,6 +67,8 @@ class WanderingMapper(Node):
             "route_extension_period": 3.0,
             "wall_heading_radius": 1.50,
             "progress_timeout": 20.0, "significant_progress": 0.25,
+            "discovery_progress_timeout": 30.0,
+            "minimum_discovery_area_gain": 1.0,
             "stuck_radius": 2.0, "stuck_timeout": 120.0,
             "recovery_backup_distance": 2.14, "recovery_backup_speed": 0.15,
         }
@@ -88,6 +90,10 @@ class WanderingMapper(Node):
         self._global_recovery_requested = False
         self._best_distance = None
         self._last_progress_time = None
+        self._mapped_free_area = 0.0
+        self._discovery_start_area = 0.0
+        self._discovery_start_time = None
+        self._unavoidable_transit = False
         self._stuck_anchor = None
         self._stuck_anchor_time = None
         self._force_least_explored = False
@@ -123,6 +129,12 @@ class WanderingMapper(Node):
 
     def _map_callback(self, message):
         self._map = message
+        values = np.asarray(message.data, dtype=np.int16)
+        threshold = int(self.get_parameter("free_threshold").value)
+        free_cells = np.count_nonzero(
+            (values >= 0) & (values <= threshold)
+        )
+        self._mapped_free_area = free_cells * message.info.resolution ** 2
 
     def _scan_callback(self, message):
         self._scan = message
@@ -917,7 +929,7 @@ class WanderingMapper(Node):
                 )
                 chosen = (
                     goal, size, poses, gain, route_length, revisit_distance,
-                    avoidable_revisit,
+                    avoidable_revisit, unavoidable_transit,
                 )
                 break
         if chosen is None:
@@ -953,7 +965,7 @@ class WanderingMapper(Node):
         self._empty_cycles = 0
         (
             goal, size, poses, gain, route_length, revisit_distance,
-            avoidable_revisit,
+            avoidable_revisit, unavoidable_transit,
         ) = chosen
         preview = Path()
         preview.header.frame_id = str(self.get_parameter("map_frame").value)
@@ -978,6 +990,9 @@ class WanderingMapper(Node):
         self._global_recovery_requested = False
         self._best_distance = None
         self._last_progress_time = self.get_clock().now()
+        self._discovery_start_area = self._mapped_free_area
+        self._discovery_start_time = self.get_clock().now()
+        self._unavoidable_transit = unavoidable_transit
         if self._force_least_explored:
             self.get_logger().warn(
                 "Failure recovery: routing to the least-explored reachable map region."
@@ -1061,6 +1076,33 @@ class WanderingMapper(Node):
                     f"No {progress:.2f} m route progress for {timeout:.0f} s; "
                     "canceling for least-explored global replanning."
                 )
+            self._goal_handle.cancel_goal_async()
+        discovery_timeout = float(
+            self.get_parameter("discovery_progress_timeout").value
+        )
+        discovery_gain = self._mapped_free_area - self._discovery_start_area
+        minimum_gain = float(
+            self.get_parameter("minimum_discovery_area_gain").value
+        )
+        if discovery_gain >= minimum_gain:
+            self._discovery_start_area = self._mapped_free_area
+            self._discovery_start_time = now
+        elif (
+            self._discovery_start_time is not None
+            and (now - self._discovery_start_time).nanoseconds
+            >= discovery_timeout * 1e9
+            and not self._recovery_requested
+            and not self._global_recovery_requested
+            and not self._unavoidable_transit
+            and self._goal_handle is not None
+        ):
+            self._global_recovery_requested = True
+            self._force_least_explored = True
+            self.get_logger().warn(
+                f"Map gained only {discovery_gain:.1f} m^2 in "
+                f"{discovery_timeout:.0f} s; canceling for a more productive "
+                "frontier route."
+            )
             self._goal_handle.cancel_goal_async()
         self.get_logger().info(
             f"Exploring: {distance:.1f} m remaining.",

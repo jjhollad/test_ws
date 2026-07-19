@@ -49,6 +49,8 @@ robot when replaying.
   mid-route preemption;
 - configurable **Segment completion timeout** controls how long Nav2 may take
   to advance each 0.25 m progress segment before stalled-route recovery;
+- configurable **Map discovery timeout** cancels a physically moving but
+  unproductive route when it fails to add 1.0 m² of free map in time;
 - one-click wall-mapping bringup starts the corridor world, RViz, SLAM, Nav2,
   chassis-aware LiDAR filtering, the global planner, and wall following;
 - timestamped rosbag runs with JSON metadata and CSV event markers;

@@ -244,6 +244,12 @@ TUNING_VARIABLES = {
         'Seconds Nav2 may take to make 0.25 m of significant route progress '
         'before the segment is considered stalled and recovery begins.'
     ),
+    'discovery_progress_timeout': (
+        'Map discovery timeout', 'Global frontier planner',
+        10.0, 180.0, 30.0, 1,
+        'Seconds Nav2 may follow a route without adding at least 1.0 m² of '
+        'new free map before switching to a more productive frontier.'
+    ),
 }
 
 
@@ -521,6 +527,7 @@ class RunManagerWindow(QMainWindow):
             'route_extension_period',
             'wall_transit_weight', 'unavoidable_route_horizon',
             'progress_timeout',
+            'discovery_progress_timeout',
         )
         arguments = [
             f'{key}:={self._configuration_value(key)}' for key in keys
