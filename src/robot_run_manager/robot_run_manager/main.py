@@ -238,6 +238,12 @@ TUNING_VARIABLES = {
         'Maximum wall-biased route length prepared through mapped space before '
         'rolling extension continues toward the frontier.'
     ),
+    'progress_timeout': (
+        'Segment completion timeout', 'Global frontier planner',
+        5.0, 120.0, 20.0, 1,
+        'Seconds Nav2 may take to make 0.25 m of significant route progress '
+        'before the segment is considered stalled and recovery begins.'
+    ),
 }
 
 
@@ -514,6 +520,7 @@ class RunManagerWindow(QMainWindow):
             'reverse_penalty', 'clearance_weight',
             'route_extension_period',
             'wall_transit_weight', 'unavoidable_route_horizon',
+            'progress_timeout',
         )
         arguments = [
             f'{key}:={self._configuration_value(key)}' for key in keys
