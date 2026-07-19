@@ -50,6 +50,8 @@ robot when replaying.
   variable used by this application: wall geometry, route construction,
   frontier scoring, corridor inference, novelty, replanning, and recovery;
   values apply to the next behavior start;
+- all configuration sliders are explicitly synchronized to the desktop
+  settings store when the manager closes and restored on its next launch;
 - guarded rolling Nav2 route extension, adjustable with **Path extension
   interval**, adds farther frontier poses near the route tail without rapid
   mid-route preemption;

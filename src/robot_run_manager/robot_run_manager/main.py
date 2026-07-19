@@ -692,6 +692,20 @@ class RunManagerWindow(QMainWindow):
         decimals = TUNING_VARIABLES[key][5]
         return self.config_sliders[key].value() / 10 ** decimals
 
+    def _save_configuration(self):
+        """Flush every current slider value to persistent desktop settings."""
+        for key in TUNING_VARIABLES:
+            self.settings.setValue(
+                f'tuning/{key}', self._configuration_value(key)
+            )
+        self.settings.sync()
+        if self.settings.status() != QSettings.NoError:
+            self.output.appendPlainText(
+                'WARNING: configuration settings could not be saved.'
+            )
+            return False
+        return True
+
     def _planner_launch_arguments(self):
         keys = (
             'robot_clearance', 'goal_clearance', 'waypoint_spacing',
@@ -1880,6 +1894,8 @@ class RunManagerWindow(QMainWindow):
         for name in list(self.processes):
             if name != 'recording':
                 self._request_stop(name)
+        if self._save_configuration():
+            self.output.appendPlainText('Configuration settings saved.')
         event.accept()
 
 
