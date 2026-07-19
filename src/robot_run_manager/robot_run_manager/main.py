@@ -203,6 +203,12 @@ TUNING_VARIABLES = {
         'Seconds the global planner keeps control after wall following yields '
         'before the wall behavior may attempt its next qualified takeover.'
     ),
+    'dead_end_priority_multiplier': (
+        'Dead-end exit priority', 'Behavior coordination',
+        0.0, 3.0, 1.2, 1,
+        'Multiplies measured corridor-entry distance to reserve wall-follower '
+        'control while turning around and tracing back out. Zero disables it.'
+    ),
     'information_weight': (
         'Unknown-space reward', 'Global frontier planner', 0.0, 10.0, 4.0, 1,
         'Reward per square metre of unknown space visible at a frontier.'
@@ -1224,6 +1230,8 @@ class RunManagerWindow(QMainWindow):
                 f'{self._configuration_value("wall_fit_inlier_distance")}',
                 '-p', 'minimum_handoff_wall_length:='
                 f'{self._configuration_value("minimum_handoff_wall_length")}',
+                '-p', 'dead_end_priority_multiplier:='
+                f'{self._configuration_value("dead_end_priority_multiplier")}',
                 '-p', 'exploration_evaluation_period:=25.0',
                 '-p', 'global_planning_cooldown:='
                 f'{self._configuration_value("global_planning_cooldown")}',

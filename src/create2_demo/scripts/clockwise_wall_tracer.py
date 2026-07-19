@@ -56,6 +56,9 @@ class ClockwiseWallTracer(Node):
             "handoff_heading_tolerance": 0.17,
             "handoff_distance_tolerance": 0.20,
             "alignment_waypoint_spacing": 0.50,
+            "dead_end_priority_multiplier": 1.20,
+            "dead_end_minimum_depth": 1.0,
+            "dead_end_side_max_distance": 4.0,
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value)
@@ -77,6 +80,10 @@ class ClockwiseWallTracer(Node):
         self._alignment_pending = False
         self._alignment_claimed_at = None
         self._alignment_goal_handle = None
+        self._odometry_distance = 0.0
+        self._corridor_entry_distance = 0.0
+        self._dead_end_escape_remaining = 0.0
+        self._dead_end_escape_active = False
         self._backup_start = None
         self._trace_path = Path()
         self._trace_path.header.frame_id = "odom"
@@ -118,9 +125,29 @@ class ClockwiseWallTracer(Node):
             self._scan_start_time = self.get_clock().now()
 
     def _odom_callback(self, message):
+        previous_pose = self._pose
         self._pose = (
             message.pose.pose.position.x, message.pose.pose.position.y
         )
+        if previous_pose is not None:
+            travelled = math.hypot(
+                self._pose[0] - previous_pose[0],
+                self._pose[1] - previous_pose[1],
+            )
+            self._odometry_distance += travelled
+            if self._dead_end_escape_active:
+                self._dead_end_escape_remaining = max(
+                    0.0, self._dead_end_escape_remaining - travelled
+                )
+                if self._dead_end_escape_remaining == 0.0:
+                    self._dead_end_escape_active = False
+                    self._history.clear()
+                    self._trace_start_time = self.get_clock().now()
+                    self._trace_start_free_area = self._free_area
+                    self.get_logger().info(
+                        "Dead-end escape priority distance completed; normal "
+                        "behavior handoffs restored."
+                    )
         append = not self._trace_path.poses
         if not append:
             previous = self._trace_path.poses[-1].pose.position
@@ -297,6 +324,37 @@ class ClockwiseWallTracer(Node):
             + np.arange(len(ranges)) * self._scan.angle_increment
         )
         return self._right_wall(ranges, angles)
+
+    def _side_wall_present(self, ranges, angles, left=False):
+        lower, upper = ((35, 125) if left else (-125, -35))
+        selected = (
+            np.isfinite(ranges)
+            & (angles > math.radians(lower))
+            & (angles < math.radians(upper))
+        )
+        side = ranges[selected]
+        return len(side) >= 8 and float(np.percentile(side, 25.0)) <= float(
+            self.get_parameter("dead_end_side_max_distance").value
+        )
+
+    def _start_dead_end_escape(self):
+        depth = max(
+            0.0, self._odometry_distance - self._corridor_entry_distance
+        )
+        minimum = float(self.get_parameter("dead_end_minimum_depth").value)
+        multiplier = float(
+            self.get_parameter("dead_end_priority_multiplier").value
+        )
+        if depth < minimum or multiplier <= 0.0:
+            return False
+        self._dead_end_escape_remaining = depth * multiplier
+        self._dead_end_escape_active = True
+        self._set_state("dead_end_turnaround_priority")
+        self.get_logger().warn(
+            f"Dead end detected {depth:.1f} m into corridor; reserving wall "
+            f"control for {self._dead_end_escape_remaining:.1f} m of exit travel."
+        )
+        return True
 
     @staticmethod
     def _yaw_from_quaternion(rotation):
@@ -491,6 +549,7 @@ class ClockwiseWallTracer(Node):
             self._cmd.publish(Twist())
             if self._alignment_claimed_at is None:
                 self._alignment_claimed_at = now
+                self._corridor_entry_distance = self._odometry_distance
                 self._set_state("claiming_nav2_for_wall_alignment")
                 return
             settle = float(self.get_parameter("alignment_settle_time").value)
@@ -506,7 +565,13 @@ class ClockwiseWallTracer(Node):
             and (now - self._last_wall_time).nanoseconds / 1e9
             <= float(self.get_parameter("wall_timeout").value)
         )
-        stale_reason = self._exploration_is_stale(now) if recently_seen else False
+        if self._dead_end_escape_active:
+            recently_seen = True
+        stale_reason = (
+            self._exploration_is_stale(now)
+            if recently_seen and not self._dead_end_escape_active
+            else False
+        )
         if stale_reason:
             self._yield_to_global_planner(stale_reason, now)
             self._active.publish(Bool(data=False))
@@ -537,6 +602,17 @@ class ClockwiseWallTracer(Node):
                 )
                 self._cmd.publish(command)
                 return
+
+        dead_end = (
+            not self._dead_end_escape_active
+            and front_distance < float(
+                self.get_parameter("front_stop_distance").value
+            )
+            and wall is not None
+            and self._side_wall_present(ranges, angles, left=True)
+        )
+        if dead_end:
+            self._start_dead_end_escape()
 
         if self._update_progress():
             self._backup_start = self._pose
