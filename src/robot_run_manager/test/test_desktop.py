@@ -23,5 +23,8 @@ def test_launcher_sources_workspace():
     assert text.startswith('[Desktop Entry]\n')
     assert 'Exec="/tmp/example launcher"' in text
     wrapper = wrapper_text(workspace)
+    assert "cd '/tmp/example workspace'" in wrapper
+    assert 'source /opt/ros/humble/setup.bash' in wrapper
+    assert 'colcon build --symlink-install --base-paths src' in wrapper
     assert '/tmp/example workspace/install/setup.bash' in wrapper
     assert 'ros2 run robot_run_manager run_manager_gui' in wrapper

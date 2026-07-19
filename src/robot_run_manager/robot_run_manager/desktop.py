@@ -19,12 +19,15 @@ from robot_run_manager.main import find_workspace
 
 
 def wrapper_text(workspace):
-    """Return the executable wrapper which prepares the ROS environment."""
+    """Return the wrapper which builds and prepares the ROS environment."""
+    quoted_workspace = shlex.quote(str(workspace))
     return (
         '#!/usr/bin/env bash\n'
-        'set -e\n'
-        'source /opt/ros/humble/setup.bash && '
-        f'source {shlex.quote(str(workspace / "install/setup.bash"))} && '
+        'set -euo pipefail\n'
+        f'cd {quoted_workspace}\n'
+        'source /opt/ros/humble/setup.bash\n'
+        'colcon build --symlink-install --base-paths src\n'
+        f'source {shlex.quote(str(workspace / "install/setup.bash"))}\n'
         'exec ros2 run robot_run_manager run_manager_gui\n'
     )
 
@@ -39,7 +42,7 @@ def launcher_text(workspace, executable=None):
         'Type=Application\n'
         'Version=1.0\n'
         'Name=Robot Run Manager\n'
-        'Comment=Collect, map, simulate, and transfer robot runs\n'
+        'Comment=Build workspace, then open robot mapping and simulation controls\n'
         f'Exec="{escaped_executable}"\n'
         f'Path={workspace}\n'
         'Icon=applications-engineering\n'

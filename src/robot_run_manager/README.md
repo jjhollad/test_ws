@@ -57,6 +57,10 @@ ros2 run robot_run_manager install_desktop_launcher
 Then double-click **Robot Run Manager** on the desktop. On Ubuntu, the first
 launch may require right-clicking the icon and selecting **Allow Launching**.
 The same installer is available inside the GUI as **Install Desktop Launcher**.
+Each desktop launch builds the active `src` tree with
+`colcon build --symlink-install --base-paths src`, sources ROS 2 and
+`install/setup.bash`, then opens the GUI. Limiting discovery to `src` avoids
+duplicate packages stored under nested transfer workspaces.
 
 Set `ROBOT_WORKSPACE` before launching if the clone is not at `~/test_ws`:
 
