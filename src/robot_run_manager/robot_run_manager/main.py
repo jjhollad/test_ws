@@ -690,6 +690,8 @@ class RunManagerWindow(QMainWindow):
 
     def _configuration_value(self, key):
         decimals = TUNING_VARIABLES[key][5]
+        if decimals == 0:
+            return self.config_sliders[key].value()
         return self.config_sliders[key].value() / 10 ** decimals
 
     def _save_configuration(self):

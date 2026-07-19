@@ -6,7 +6,12 @@ import math
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import (
+    DurabilityPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from sensor_msgs.msg import LaserScan
 
 
@@ -18,13 +23,16 @@ class ScanClearer(Node):
         self.declare_parameter("clearing_topic", "/scan_clear")
         self.declare_parameter("clearing_margin", 0.05)
         self.declare_parameter("self_filter_margin", 0.02)
+        output_qos = QoSProfile(depth=10)
+        output_qos.reliability = ReliabilityPolicy.RELIABLE
+        output_qos.durability = DurabilityPolicy.VOLATILE
         self._filtered_publisher = self.create_publisher(
             LaserScan, str(self.get_parameter("filtered_topic").value),
-            qos_profile_sensor_data,
+            output_qos,
         )
         self._clearing_publisher = self.create_publisher(
             LaserScan, str(self.get_parameter("clearing_topic").value),
-            qos_profile_sensor_data,
+            output_qos,
         )
         self.create_subscription(
             LaserScan, str(self.get_parameter("input_topic").value),
