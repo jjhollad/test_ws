@@ -20,6 +20,7 @@ install(PROGRAMS
   scripts/activate_navigation.py
   scripts/clockwise_wall_tracer.py
   scripts/contact_monitor.py
+  scripts/exploration_coordinator.py
   scripts/scan_clearer.py
   scripts/trial_monitor.py
   scripts/wandering_mapper.py

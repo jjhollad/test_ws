@@ -94,7 +94,7 @@ class SupervisorTree:
                 '90° Inside Left Corner', state_provider, 'wall_state', running,
                 'A right wall continues into a front wall. Slow forward motion '
                 'and turn counterclockwise until front clearance returns.',
-                ('front_stop_distance', 'emergency_front_distance',
+                ('inside_corner_front_clearance', 'emergency_front_distance',
                  'turn_speed', 'wall_timeout'),
                 ('inside_corner_left_90',),
             ),
@@ -235,7 +235,11 @@ class SupervisorTree:
         ])
         mission.add_children([
             StateBehaviour('Return to Origin', state_provider, 'return_home', running),
-            StateBehaviour('Dead-End Exit', state_provider, 'dead_end_exit', running),
+            StateBehaviour(
+                'Recovery', state_provider, 'recovery', running,
+                'Safety or confirmed navigation failure owns motion until the '
+                'recovery command settles.'
+            ),
             wall,
             StateBehaviour(
                 'Frontier Navigation', state_provider, 'frontier_navigation', running

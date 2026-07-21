@@ -12,11 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from pathlib import Path
+
 from robot_run_manager.main import (
     ACTION_GROUPS,
     ACTION_TOOLTIPS,
     IMPLEMENTED_ACTIONS,
     TUNING_VARIABLES,
+    find_autonomy_workspace,
 )
 
 
@@ -29,6 +32,28 @@ def test_every_implemented_action_has_a_button():
     assert IMPLEMENTED_ACTIONS <= buttons
     assert buttons == set(ACTION_TOOLTIPS)
     assert all(ACTION_TOOLTIPS.values())
+    assert 'Start Wandering Mapper' not in buttons
+    assert 'Stop Wandering Mapper' not in buttons
+    assert {'Start Xbox Teleop', 'Stop Xbox Teleop'} <= buttons
+    assert {
+        'Start Autonomous Exploration',
+        'Pause Exploration',
+        'Resume Exploration',
+        'Stop Autonomous Exploration',
+        'Exploration E-Stop',
+        'Clear Exploration E-Stop',
+    } <= buttons
+
+
+def test_autonomy_workspace_discovery(tmp_path, monkeypatch):
+    launch = (
+        tmp_path / 'src/create_robot/create_driver/launch'
+        / 'autonomous_exploration.launch.py'
+    )
+    launch.parent.mkdir(parents=True)
+    launch.write_text('')
+    monkeypatch.setenv('BIGSWEEP_WORKSPACE', str(tmp_path))
+    assert find_autonomy_workspace(Path('/missing')) == tmp_path
 
 
 def test_tuning_variables_have_safe_ranges_and_descriptions():

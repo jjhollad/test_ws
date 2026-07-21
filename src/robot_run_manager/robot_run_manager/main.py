@@ -18,6 +18,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -63,6 +64,8 @@ ACTION_GROUPS = {
         'Preflight Check',
         'Start Robot',
         'Stop Robot',
+        'Start Xbox Teleop',
+        'Stop Xbox Teleop',
         'Emergency Stop',
         'Kill ROS Processes',
         'Open RViz',
@@ -80,8 +83,12 @@ ACTION_GROUPS = {
         'Start Mapping',
         'Stop Mapping',
         'Save Map',
-        'Start Wandering Mapper',
-        'Stop Wandering Mapper',
+        'Start Autonomous Exploration',
+        'Pause Exploration',
+        'Resume Exploration',
+        'Stop Autonomous Exploration',
+        'Exploration E-Stop',
+        'Clear Exploration E-Stop',
         'Start Wall Follower',
         'Stop Wall Follower',
         'Start Simulation',
@@ -104,6 +111,13 @@ ACTION_TOOLTIPS = {
     'Preflight Check': 'Check ROS, workspace, hardware, display, and disk readiness.',
     'Start Robot': 'Start the guarded real-robot motor, relay, and state-publisher stack.',
     'Stop Robot': 'Publish zero velocity and stop the GUI-managed real-robot stack.',
+    'Start Xbox Teleop': (
+        'Launch Xbox joystick input and teleop_twist_joy control for the '
+        'running robot.'
+    ),
+    'Stop Xbox Teleop': (
+        'Publish zero velocity and stop Xbox joystick teleoperation.'
+    ),
     'Emergency Stop': 'Immediately publish repeated zero velocity and stop managed processes.',
     'Kill ROS Processes': 'Force-kill stale ROS, Gazebo, RViz, Nav2, SLAM, and driver processes.',
     'Open RViz': 'Open RViz for robot, sensor, map, and navigation visualization.',
@@ -117,13 +131,28 @@ ACTION_TOOLTIPS = {
     'Start Mapping': 'Start supervised real-robot SLAM, Nav2, LiDAR, joystick, and RViz.',
     'Stop Mapping': 'Stop autonomous behavior, publish zero velocity, and stop real mapping.',
     'Save Map': 'Save the active SLAM occupancy map as YAML and PGM files.',
-    'Start Wandering Mapper': 'Start the OpenCV global frontier planner through Nav2.',
-    'Stop Wandering Mapper': 'Cancel global frontier exploration and publish zero velocity.',
-    'Start Wall Follower': (
-        'Start coordinated mapping; Nav2 aligns to the nearest right wall, '
-        'drives a straight 3 m parallel segment, then hands off to tracing.'
+    'Start Autonomous Exploration': (
+        'Start SLAM, right-wall mapping, progress checking, and Nav2 frontier '
+        'exploration on the selected real robot or local simulation.'
     ),
-    'Stop Wall Follower': 'Stop both coordinated planners and publish zero velocity.',
+    'Pause Exploration': 'Cancel autonomous motion while keeping the exploration stack available.',
+    'Resume Exploration': 'Clear the paused state and resume with readiness checks.',
+    'Stop Autonomous Exploration': (
+        'Stop autonomous behavior, publish zero velocity, and close its complete stack.'
+    ),
+    'Exploration E-Stop': (
+        'Latch the autonomous emergency stop and cancel wall-following and Nav2 motion.'
+    ),
+    'Clear Exploration E-Stop': (
+        'Clear the autonomous stop; readiness checks run again before motion resumes.'
+    ),
+    'Start Wall Follower': (
+        'Start wall-first behavior-tree exploration. Wall tracing remains primary; '
+        'stagnation, loops, or retracing trigger nearest-frontier relocation.'
+    ),
+    'Stop Wall Follower': (
+        'Stop behavior-tree wall exploration and its frontier planner.'
+    ),
     'Start Simulation': (
         'Start the corridor Gazebo world, rectangular robot, SLAM, Nav2, and RViz.'
     ),
@@ -149,6 +178,8 @@ IMPLEMENTED_ACTIONS = {
     'Preflight Check',
     'Start Robot',
     'Stop Robot',
+    'Start Xbox Teleop',
+    'Stop Xbox Teleop',
     'Emergency Stop',
     'Kill ROS Processes',
     'Open RViz',
@@ -173,10 +204,23 @@ IMPLEMENTED_ACTIONS = {
     'Flag & Open Logs',
     'Rebuild & Restart Manager',
     'Install Desktop Launcher',
-    'Start Wandering Mapper',
-    'Stop Wandering Mapper',
+    'Start Autonomous Exploration',
+    'Pause Exploration',
+    'Resume Exploration',
+    'Stop Autonomous Exploration',
+    'Exploration E-Stop',
+    'Clear Exploration E-Stop',
     'Start Wall Follower',
     'Stop Wall Follower',
+}
+
+HIDDEN_SUPERVISOR_EXPLORATION_ACTIONS = {
+    'Start Autonomous Exploration',
+    'Pause Exploration',
+    'Resume Exploration',
+    'Stop Autonomous Exploration',
+    'Exploration E-Stop',
+    'Clear Exploration E-Stop',
 }
 
 RECORD_TOPICS = [
@@ -199,13 +243,24 @@ RECORD_TOPICS = [
     '/wall_behavior_state',
     '/frontier_handoff_requested',
     '/frontier_navigation_complete',
+    '/exploration_coordination_state',
+    '/opencv_hallway_mapping_driver/status',
+    '/mapping_progress_monitor/status',
+    '/frontier_selector/status',
+    '/exploration_supervisor/status',
 ]
 
 TUNING_VARIABLES = {
     'target_wall_distance': (
-        'Minimum wall clearance', 'Wall follower', 0.10, 1.50, 0.60, 2,
+        'Minimum wall clearance', 'Wall follower', 0.10, 1.50, 1.00, 2,
         'Minimum distance from the closest part of the robot footprint to the '
         'right wall. Angled front and rear corners are included.'
+    ),
+    'inside_corner_front_clearance': (
+        'Inside-corner front clearance', 'Wall follower',
+        0.40, 2.00, 1.00, 2,
+        'Closest forward-footprint distance from the wall ahead at which the '
+        'inside-corner left turn begins.'
     ),
     'linear_speed': (
         'Wall speed', 'Wall follower', 0.05, 0.40, 0.28, 2,
@@ -255,7 +310,7 @@ TUNING_VARIABLES = {
         'before straight tracing changes into an inside-corner turn.'
     ),
     'wall_timeout': (
-        'Lost-wall memory', 'Behavior coordination', 0.2, 8.0, 2.0, 1,
+        'Lost-wall memory', 'Behavior coordination', 0.2, 20.0, 10.0, 1,
         'How long the last valid right wall remains trusted before lost-wall search.'
     ),
     'wall_fit_max_range': (
@@ -654,6 +709,24 @@ def find_workspace():
     return Path.home() / 'test_ws'
 
 
+def find_autonomy_workspace(manager_workspace):
+    """Find the workspace containing the dedicated exploration launch."""
+    configured = os.environ.get('BIGSWEEP_WORKSPACE')
+    candidates = [
+        Path(configured).expanduser() if configured else None,
+        manager_workspace,
+        Path.home() / 'BigSweepLogic',
+    ]
+    relative_launch = (
+        Path('src/create_robot/create_driver/launch')
+        / 'autonomous_exploration.launch.py'
+    )
+    for candidate in candidates:
+        if candidate is not None and (candidate / relative_launch).is_file():
+            return candidate.resolve()
+    return None
+
+
 class RunManagerWindow(QMainWindow):
     """Run-manager window with initial safety and process controls."""
 
@@ -662,6 +735,7 @@ class RunManagerWindow(QMainWindow):
         self.ros_node = ros_node
         self.cmd_vel_publisher = ros_node.create_publisher(Twist, '/cmd_vel', 10)
         self.workspace = find_workspace()
+        self.autonomy_workspace = find_autonomy_workspace(self.workspace)
         self.processes = {}
         self.buttons = {}
         self.preflight_passed = False
@@ -675,8 +749,22 @@ class RunManagerWindow(QMainWindow):
         self.config_sliders = {}
         self.config_value_labels = {}
         self.wall_behavior_state = 'inactive'
+        self.coordination_state = 'FRONTIER_NAVIGATION'
+        self.exploration_state = 'STOPPED'
+        self.exploration_paused = False
+        self.exploration_emergency_stopped = False
         self.wall_state_subscription = ros_node.create_subscription(
             String, '/wall_behavior_state', self._wall_state_changed, 10
+        )
+        self.coordination_state_subscription = ros_node.create_subscription(
+            String, '/exploration_coordination_state',
+            self._coordination_state_changed, 10
+        )
+        self.exploration_status_subscription = ros_node.create_subscription(
+            String,
+            '/exploration_supervisor/status',
+            self._exploration_status_changed,
+            10,
         )
 
         self.stop_timer = QTimer(self)
@@ -837,7 +925,16 @@ class RunManagerWindow(QMainWindow):
                 button.setToolTip(ACTION_TOOLTIPS[action])
                 self.buttons[action] = button
                 grid.addWidget(button, index // 3, index % 3)
+                if action in HIDDEN_SUPERVISOR_EXPLORATION_ACTIONS:
+                    button.setVisible(False)
             root_layout.addWidget(group)
+
+        self.buttons['Start Wall Follower'].setText(
+            'Start Behavior-Tree Exploration'
+        )
+        self.buttons['Stop Wall Follower'].setText(
+            'Stop Behavior-Tree Exploration'
+        )
 
         self.output = QPlainTextEdit()
         self.output.setReadOnly(True)
@@ -848,11 +945,20 @@ class RunManagerWindow(QMainWindow):
         self.buttons['Preflight Check'].clicked.connect(self.run_preflight)
         self.buttons['Start Robot'].clicked.connect(self.start_robot)
         self.buttons['Stop Robot'].clicked.connect(self.stop_robot)
+        self.buttons['Start Xbox Teleop'].clicked.connect(
+            self.start_xbox_teleop
+        )
+        self.buttons['Stop Xbox Teleop'].clicked.connect(
+            self.stop_xbox_teleop
+        )
         self.buttons['Emergency Stop'].clicked.connect(self.emergency_stop)
         self.buttons['Kill ROS Processes'].clicked.connect(
             self.kill_ros_processes
         )
         self.buttons['Kill ROS Processes'].setStyleSheet(
+            'background: #b00020; color: white; font-weight: bold;'
+        )
+        self.buttons['Exploration E-Stop'].setStyleSheet(
             'background: #b00020; color: white; font-weight: bold;'
         )
         self.buttons['Open RViz'].clicked.connect(self.open_rviz)
@@ -866,11 +972,23 @@ class RunManagerWindow(QMainWindow):
         self.buttons['Start Mapping'].clicked.connect(self.start_mapping)
         self.buttons['Stop Mapping'].clicked.connect(self.stop_mapping)
         self.buttons['Save Map'].clicked.connect(self.save_map)
-        self.buttons['Start Wandering Mapper'].clicked.connect(
-            self.start_wandering_mapper
+        self.buttons['Start Autonomous Exploration'].clicked.connect(
+            self.start_autonomous_exploration
         )
-        self.buttons['Stop Wandering Mapper'].clicked.connect(
-            self.stop_wandering_mapper
+        self.buttons['Pause Exploration'].clicked.connect(
+            lambda: self.set_exploration_paused(True)
+        )
+        self.buttons['Resume Exploration'].clicked.connect(
+            lambda: self.set_exploration_paused(False)
+        )
+        self.buttons['Stop Autonomous Exploration'].clicked.connect(
+            self.stop_autonomous_exploration
+        )
+        self.buttons['Exploration E-Stop'].clicked.connect(
+            lambda: self.set_exploration_emergency_stop(True)
+        )
+        self.buttons['Clear Exploration E-Stop'].clicked.connect(
+            lambda: self.set_exploration_emergency_stop(False)
         )
         self.buttons['Start Wall Follower'].clicked.connect(
             self.start_wall_follower
@@ -1099,6 +1217,7 @@ class RunManagerWindow(QMainWindow):
         navigation_active = any([
             self._is_running('simulation'),
             self._is_running('mapping'),
+            self._is_running('autonomous_exploration'),
         ])
         return {
             'always': True,
@@ -1108,13 +1227,36 @@ class RunManagerWindow(QMainWindow):
             'localization': navigation_active and '/slam_toolbox' in node_names,
             'return_home': False,
             'dead_end_exit': False,
-            'wall_following': self._is_running('wall_follower'),
+            'recovery': self.coordination_state == 'RECOVERY',
+            'wall_following': (
+                self.coordination_state == 'WALL_FOLLOWING'
+            ),
             'wall_state': self.wall_behavior_state,
-            'frontier_navigation': self._is_running('wandering_mapper'),
+            'frontier_navigation': (
+                self.coordination_state == 'FRONTIER_NAVIGATION'
+            ),
         }
 
     def _wall_state_changed(self, message):
         self.wall_behavior_state = message.data
+
+    def _coordination_state_changed(self, message):
+        self.coordination_state = message.data
+
+    def _exploration_status_changed(self, message):
+        try:
+            status = json.loads(message.data)
+        except (json.JSONDecodeError, TypeError):
+            return
+        self.exploration_state = str(status.get('state', 'UNKNOWN'))
+        self.exploration_paused = bool(status.get('paused', False))
+        self.exploration_emergency_stopped = bool(
+            status.get('emergency_stopped', False)
+        )
+        self.statusBar().showMessage(
+            f'Autonomous exploration: {self.exploration_state}'
+        )
+        self._update_controls()
 
     def _spin_ros_once(self):
         rclpy.spin_once(self.ros_node, timeout_sec=0.0)
@@ -1228,6 +1370,22 @@ class RunManagerWindow(QMainWindow):
         )
         return [f'{key}:={self._configuration_value(key)}' for key in keys]
 
+    def _autonomous_launch_arguments(self):
+        mapping = {
+            'wall_clearance': 'target_wall_distance',
+            'wall_speed': 'linear_speed',
+            'wall_lost_timeout': 'wall_timeout',
+            'wall_heading_gain': 'heading_gain',
+            'wall_distance_gain': 'distance_gain',
+            'wall_turn_speed': 'turn_speed',
+            'wall_front_stop_distance': 'front_stop_distance',
+            'wall_emergency_clearance': 'emergency_front_distance',
+        }
+        return [
+            f'{argument}:={self._configuration_value(setting)}'
+            for argument, setting in mapping.items()
+        ]
+
     def _role_changed(self):
         self.preflight_passed = False
         self.statusBar().showMessage('Role changed — run preflight again')
@@ -1241,7 +1399,7 @@ class RunManagerWindow(QMainWindow):
 
     def _set_workflow_styles(
         self, real_robot, running, recording, mapping, simulation,
-        replaying, wandering, wall_following,
+        replaying, exploring, wall_following,
     ):
         """Highlight the next action and make active stop actions conspicuous."""
         green = (
@@ -1260,6 +1418,9 @@ class RunManagerWindow(QMainWindow):
         self.buttons['Kill ROS Processes'].setStyleSheet(
             'background: #b00020; color: white; font-weight: bold;'
         )
+        self.buttons['Exploration E-Stop'].setStyleSheet(
+            'background: #b00020; color: white; font-weight: bold;'
+        )
         self.role_selector.setStyleSheet('')
         self.operator_input.setStyleSheet('')
 
@@ -1276,22 +1437,34 @@ class RunManagerWindow(QMainWindow):
                 self.buttons[primary].setStyleSheet(green)
             if real_robot and self.buttons['Start Mapping'].isEnabled():
                 self.buttons['Start Mapping'].setStyleSheet(green)
-        elif (mapping or simulation) and not wandering and not wall_following:
-            for action in ('Start Wall Follower', 'Start Wandering Mapper'):
-                if self.buttons[action].isEnabled():
-                    self.buttons[action].setStyleSheet(green)
+            if self.buttons['Start Autonomous Exploration'].isEnabled():
+                self.buttons['Start Autonomous Exploration'].setStyleSheet(green)
+        elif real_robot and not exploring:
+            action = 'Start Autonomous Exploration'
+            if self.buttons[action].isEnabled():
+                self.buttons[action].setStyleSheet(green)
+        elif simulation and not wall_following:
+            if self.buttons['Start Wall Follower'].isEnabled():
+                self.buttons['Start Wall Follower'].setStyleSheet(green)
 
         stop_states = {
             'Stop Robot': running,
+            'Stop Xbox Teleop': self._is_running('xbox_teleop'),
             'Stop Recording': recording,
             'Stop Mapping': mapping,
             'Stop Simulation': simulation or replaying,
-            'Stop Wandering Mapper': wandering,
+            'Stop Autonomous Exploration': exploring,
             'Stop Wall Follower': wall_following,
         }
         for action, active in stop_states.items():
             if active:
                 self.buttons[action].setStyleSheet(red)
+        if exploring and self.exploration_emergency_stopped:
+            self.buttons['Clear Exploration E-Stop'].setStyleSheet(green)
+        elif exploring and self.exploration_paused:
+            self.buttons['Resume Exploration'].setStyleSheet(green)
+        elif exploring:
+            self.buttons['Pause Exploration'].setStyleSheet(red)
 
     def _gazebo_gui_changed(self, show_gui):
         """Persist and apply the Gazebo client preference."""
@@ -1325,8 +1498,9 @@ class RunManagerWindow(QMainWindow):
         saving_map = self._is_running('save_map')
         simulation = self._is_running('simulation')
         replaying = self._is_running('replay')
-        wandering = self._is_running('wandering_mapper')
+        exploring = self._is_running('autonomous_exploration')
         wall_following = self._is_running('wall_follower')
+        xbox_teleop = self._is_running('xbox_teleop')
         gazebo_client = self._is_running('gazebo_client')
         validating = self._is_running('validation')
         transferring = self._is_running('transfer')
@@ -1338,9 +1512,18 @@ class RunManagerWindow(QMainWindow):
                 button.setToolTip('Planned for a later step')
         self.buttons['Preflight Check'].setEnabled(machine_selected)
         self.buttons['Start Robot'].setEnabled(
-            real_robot and self.preflight_passed and not running and not mapping
+            real_robot and self.preflight_passed and not running
+            and not mapping and not exploring
         )
         self.buttons['Stop Robot'].setEnabled(running)
+        self.buttons['Start Xbox Teleop'].setEnabled(
+            real_robot
+            and self.preflight_passed
+            and running
+            and not mapping
+            and not xbox_teleop
+        )
+        self.buttons['Stop Xbox Teleop'].setEnabled(xbox_teleop)
         self.buttons['Emergency Stop'].setEnabled(True)
         self.buttons['Kill ROS Processes'].setEnabled(True)
         self.buttons['Open Gazebo'].setEnabled(
@@ -1355,25 +1538,48 @@ class RunManagerWindow(QMainWindow):
         for event_name in ('Goal', 'Collision', 'Near Miss', 'Intervention'):
             self.buttons[f'Mark {event_name}'].setEnabled(recording)
         self.buttons['Start Mapping'].setEnabled(
-            real_robot and self.preflight_passed and not running and not mapping
+            real_robot and self.preflight_passed and not running
+            and not mapping and not exploring
         )
         self.buttons['Stop Mapping'].setEnabled(mapping)
         self.buttons['Save Map'].setEnabled(
-            (mapping or simulation) and not saving_map
+            (mapping or simulation or exploring) and not saving_map
         )
-        self.buttons['Start Wandering Mapper'].setEnabled(
-            self.preflight_passed
-            and (mapping or simulation)
-            and not wandering
-            and not wall_following
-            and not replaying
+        self.buttons['Start Autonomous Exploration'].setEnabled(
+            not exploring
         )
-        self.buttons['Stop Wandering Mapper'].setEnabled(wandering)
+        if exploring:
+            self.buttons['Start Autonomous Exploration'].setToolTip(
+                'Autonomous exploration is already running.'
+            )
+        else:
+            self.buttons['Start Autonomous Exploration'].setToolTip(
+                ACTION_TOOLTIPS['Start Autonomous Exploration']
+                + ' Click to see any unmet startup requirement.'
+            )
+        self.buttons['Pause Exploration'].setEnabled(
+            exploring
+            and not self.exploration_paused
+            and not self.exploration_emergency_stopped
+        )
+        self.buttons['Resume Exploration'].setEnabled(
+            exploring
+            and self.exploration_paused
+            and not self.exploration_emergency_stopped
+        )
+        self.buttons['Stop Autonomous Exploration'].setEnabled(exploring)
+        self.buttons['Exploration E-Stop'].setEnabled(
+            exploring and not self.exploration_emergency_stopped
+        )
+        self.buttons['Clear Exploration E-Stop'].setEnabled(
+            exploring and self.exploration_emergency_stopped
+        )
         self.buttons['Start Wall Follower'].setEnabled(
             self.preflight_passed
             and not real_robot
             and not running
             and not mapping
+            and not exploring
             and not wall_following
             and not replaying
         )
@@ -1384,6 +1590,7 @@ class RunManagerWindow(QMainWindow):
             and not simulation
             and not running
             and not mapping
+            and not exploring
         )
         self.buttons['Stop Simulation'].setEnabled(simulation or replaying)
         self.buttons['Replay Selected Run'].setEnabled(
@@ -1406,10 +1613,10 @@ class RunManagerWindow(QMainWindow):
             not any(self._is_running(name) for name in self.processes)
         )
         self.buttons['Download Code'].setEnabled(not any([
-            running, recording, mapping, simulation, replaying,
+            running, recording, mapping, simulation, replaying, exploring,
         ]))
         self.buttons['Upload Code'].setEnabled(not any([
-            running, recording, mapping, simulation, replaying,
+            running, recording, mapping, simulation, replaying, exploring,
         ]))
         self.buttons['View Logs'].setEnabled(True)
         self.buttons['Flag & Open Logs'].setEnabled(True)
@@ -1427,10 +1634,12 @@ class RunManagerWindow(QMainWindow):
             active.append('simulation')
         if replaying:
             active.append('replay')
-        if wandering:
-            active.append('wandering mapper')
+        if exploring:
+            active.append(f'autonomous exploration ({self.exploration_state})')
         if wall_following:
             active.append('wall follower')
+        if xbox_teleop:
+            active.append('Xbox teleop')
         if gazebo_client:
             active.append('Gazebo window')
         if validating:
@@ -1438,8 +1647,8 @@ class RunManagerWindow(QMainWindow):
         if transferring:
             active.append('transfer')
         self.role_selector.setEnabled(not any([
-            running, recording, mapping, simulation, replaying, wandering,
-            wall_following,
+            running, recording, mapping, simulation, replaying, exploring,
+            wall_following, xbox_teleop,
         ]))
         self.process_label.setText(
             f'Managed processes: {", ".join(active)} running' if active
@@ -1447,7 +1656,7 @@ class RunManagerWindow(QMainWindow):
         )
         self._set_workflow_styles(
             real_robot, running, recording, mapping, simulation, replaying,
-            wandering, wall_following,
+            exploring, wall_following,
         )
 
     def _is_running(self, name):
@@ -1484,6 +1693,14 @@ class RunManagerWindow(QMainWindow):
                 'generic_motor_driver package',
                 self._check_ros_package('generic_motor_driver'),
                 real_robot,
+            ),
+            (
+                'Autonomous exploration workspace',
+                self.autonomy_workspace is not None
+                and (
+                    self.autonomy_workspace / 'install' / 'setup.bash'
+                ).is_file(),
+                True,
             ),
             ('Graphical display', bool(os.environ.get('DISPLAY')), False),
             ('Git command', shutil.which('git') is not None, False),
@@ -1575,6 +1792,10 @@ class RunManagerWindow(QMainWindow):
         self.output.appendPlainText(f'{name}: exited with code {exit_code}')
         if name == 'recording':
             self._finalize_recording(exit_code)
+        if name == 'autonomous_exploration':
+            self.exploration_state = 'STOPPED'
+            self.exploration_paused = False
+            self.exploration_emergency_stopped = False
         if self.combined_wall_mapping and name in {
             'wall_follower', 'wandering_mapper',
         }:
@@ -1629,8 +1850,41 @@ class RunManagerWindow(QMainWindow):
 
     def stop_robot(self):
         self._begin_zero_velocity_burst()
+        self._request_stop('xbox_teleop')
         self._request_stop('robot')
         self.statusBar().showMessage('Stopping robot stack')
+
+    def start_xbox_teleop(self):
+        if (
+            not self.preflight_passed
+            or not self._is_real_robot_role()
+            or not self._is_running('robot')
+            or self._is_running('mapping')
+            or self._is_running('xbox_teleop')
+        ):
+            return
+        if not Path('/dev/input/js0').exists():
+            QMessageBox.critical(
+                self,
+                'Joystick unavailable',
+                'Xbox teleoperation requires /dev/input/js0.',
+            )
+            return
+        self._start_process(
+            'xbox_teleop',
+            'ros2',
+            [
+                'launch',
+                'teleop_twist_joy',
+                'teleop-launch.py',
+                'joy_config:=xbox',
+            ],
+        )
+
+    def stop_xbox_teleop(self):
+        self._begin_zero_velocity_burst()
+        self._request_stop('xbox_teleop')
+        self.statusBar().showMessage('Stopping Xbox teleoperation')
 
     def start_mapping(self):
         if (
@@ -1675,6 +1929,156 @@ class RunManagerWindow(QMainWindow):
         self._request_stop('mapping')
         self.statusBar().showMessage('Stopping mapping stack')
 
+    def start_autonomous_exploration(self):
+        if self._is_running('autonomous_exploration'):
+            return
+        if not self._machine_selected():
+            QMessageBox.information(
+                self,
+                'Select a machine role',
+                'Select Real Robot or Local Simulation, then run Preflight Check.',
+            )
+            return
+        if not self.preflight_passed:
+            QMessageBox.information(
+                self,
+                'Preflight required',
+                'Run Preflight Check and resolve every required failure before '
+                'starting autonomous motion.',
+            )
+            return
+        if self.autonomy_workspace is None:
+            QMessageBox.critical(
+                self,
+                'Autonomy workspace unavailable',
+                'The manager could not find autonomous_exploration.launch.py. '
+                'Set BIGSWEEP_WORKSPACE or place the workspace at '
+                '~/BigSweepLogic.',
+            )
+            return
+        real_robot = self._is_real_robot_role()
+        simulation_running = self._is_running('simulation')
+        conflicting = [
+            name for name in (
+                'robot', 'mapping', 'simulation', 'wall_follower', 'replay'
+            )
+            if self._is_running(name)
+            and not (name == 'simulation' and not real_robot)
+        ]
+        if conflicting:
+            QMessageBox.warning(
+                self,
+                'Stop conflicting processes',
+                'Stop these managed processes before starting autonomous '
+                f'exploration: {", ".join(conflicting)}.',
+            )
+            return
+        setup_file = self.autonomy_workspace / 'install' / 'setup.bash'
+        if not setup_file.is_file():
+            QMessageBox.critical(
+                self,
+                'Autonomy workspace is not built',
+                f'Build {self.autonomy_workspace} before starting exploration.',
+            )
+            return
+        if real_robot and not Path('/dev/lidar').exists():
+            QMessageBox.critical(
+                self,
+                'LiDAR unavailable',
+                'Autonomous exploration requires /dev/lidar.',
+            )
+            return
+        target = 'physical robot' if real_robot else 'Gazebo simulation'
+        simulation_description = (
+            'The exploration behaviors will attach to the running Gazebo and '
+            'Nav2 stack.' if simulation_running else
+            'Gazebo and RViz will start as part of the managed process.'
+        )
+        answer = QMessageBox.warning(
+            self,
+            'Start autonomous exploration?',
+            f'This starts autonomous exploration on the {target}, including '
+            'SLAM, right-wall following, frontier selection, and Nav2. '
+            + (
+                'The robot will move after readiness checks pass. Confirm a '
+                'closed clear area and keep the physical emergency stop within reach.'
+                if real_robot else simulation_description
+            ),
+            QMessageBox.Ok | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if answer != QMessageBox.Ok:
+            return
+        launch_file = (
+            'autonomous_exploration.launch.py'
+            if real_robot else
+            'autonomous_exploration_sim.launch.py'
+        )
+        autonomy_arguments = ' '.join(self._autonomous_launch_arguments())
+        command = (
+            f'source {shlex.quote(str(setup_file))} && '
+            'exec ros2 launch generic_motor_driver '
+            f'{launch_file} {autonomy_arguments}'
+        )
+        if not real_robot and simulation_running:
+            command += (
+                ' attach_to_simulation:=True use_rviz:=False '
+                'wall_command_topic:=/cmd_vel_nav'
+            )
+        self.exploration_state = 'STARTING'
+        self.exploration_paused = False
+        self.exploration_emergency_stopped = False
+        self._start_process(
+            'autonomous_exploration', 'bash', ['-lc', command]
+        )
+
+    def _call_exploration_service(self, operation, service, value):
+        if not self._is_running('autonomous_exploration'):
+            return
+        self._start_process(
+            f'exploration_{operation}',
+            'ros2',
+            [
+                'service', 'call', service, 'std_srvs/srv/SetBool',
+                f'{{data: {str(value).lower()}}}',
+            ],
+        )
+
+    def set_exploration_paused(self, paused):
+        self._call_exploration_service(
+            'pause' if paused else 'resume',
+            '/exploration_supervisor/set_paused',
+            paused,
+        )
+        self.statusBar().showMessage(
+            'Requesting exploration pause' if paused
+            else 'Requesting exploration resume'
+        )
+
+    def set_exploration_emergency_stop(self, stopped):
+        self._begin_zero_velocity_burst()
+        self._call_exploration_service(
+            'estop' if stopped else 'clear_estop',
+            '/exploration_supervisor/set_emergency_stop',
+            stopped,
+        )
+        self.statusBar().showMessage(
+            'AUTONOMOUS EMERGENCY STOP REQUESTED' if stopped
+            else 'Requesting autonomous emergency-stop reset'
+        )
+
+    def stop_autonomous_exploration(self):
+        if not self._is_running('autonomous_exploration'):
+            return
+        self._begin_zero_velocity_burst()
+        self._call_exploration_service(
+            'stop', '/exploration_supervisor/set_enabled', False
+        )
+        QTimer.singleShot(
+            750, lambda: self._request_stop('autonomous_exploration')
+        )
+        self.statusBar().showMessage('Stopping autonomous exploration stack')
+
     def _safe_map_name(self):
         name = self.map_name_input.text().strip()
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', name):
@@ -1686,6 +2090,7 @@ class RunManagerWindow(QMainWindow):
             not (
                 self._is_running('mapping')
                 or self._is_running('simulation')
+                or self._is_running('autonomous_exploration')
             )
             or self._is_running('save_map')
         ):
@@ -1809,7 +2214,8 @@ class RunManagerWindow(QMainWindow):
             )
         self.combined_wall_mapping = True
         wall_keys = (
-            'target_wall_distance', 'linear_speed', 'heading_gain',
+            'target_wall_distance', 'inside_corner_front_clearance',
+            'linear_speed', 'heading_gain',
             'distance_gain', 'turn_speed', 'front_stop_distance',
             'wall_timeout', 'nav2_wall_follow_distance',
             'wall_fit_inlier_distance', 'wall_fit_max_range',
@@ -1889,6 +2295,8 @@ class RunManagerWindow(QMainWindow):
             QTimer.singleShot(3000, self.open_gazebo)
 
     def stop_simulation(self):
+        if self._is_running('autonomous_exploration'):
+            self.stop_autonomous_exploration()
         self.stop_wandering_mapper()
         self.stop_wall_follower()
         self._request_stop('replay')
@@ -2688,6 +3096,7 @@ class RunManagerWindow(QMainWindow):
         if any([
             self._is_running('robot'),
             self._is_running('mapping'),
+            self._is_running('autonomous_exploration'),
             self._is_running('wandering_mapper'),
             self._is_running('wall_follower'),
         ]):

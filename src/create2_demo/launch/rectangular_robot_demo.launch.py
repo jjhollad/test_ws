@@ -9,6 +9,7 @@ from nav2_common.launch import ReplaceString
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
+    GroupAction,
     IncludeLaunchDescription,
     RegisterEventHandler,
     TimerAction,
@@ -25,6 +26,7 @@ def generate_launch_description():
     demo_share = get_package_share_directory("create2_demo")
     gazebo_share = get_package_share_directory("gazebo_ros")
     nav2_share = get_package_share_directory("nav2_bringup")
+    driver_share = get_package_share_directory("generic_motor_driver")
     slam_share = get_package_share_directory("slam_toolbox")
     model = os.path.join(demo_share, "urdf", "rectangular_robot.urdf.xacro")
     default_world = os.path.join(demo_share, "worlds", "corridor_museum.world")
@@ -47,11 +49,13 @@ def generate_launch_description():
         ).replace(
             "min_laser_range: 0.0", "min_laser_range: 0.12"
         ).replace(
-            # The 10 Hz laser and 50 Hz odometry are driven by the same Gazebo
-            # clock.  A 100 ms margin covers several odometry updates without
-            # future-dating map->odom by a quarter second.  Keep the message
-            # filter short: a 100-scan queue could replay roughly ten seconds
-            # of obsolete laser data after even a brief timing discontinuity.
+            # SLAM updates map->odom at the 5 Hz scan rate, so an unadjusted
+            # transform can already be 200 ms old when Nav2 consumes it. Use
+            # half a scan period of lead to keep it within Nav2's 200 ms
+            # tolerance. scan_clearer independently bounds corrected scan
+            # stamps to the current ROS clock, preventing sensor data itself
+            # from being published in the future. Keep the queue short so a
+            # timing discontinuity cannot replay obsolete laser data.
             "transform_timeout: 0.2",
             "transform_timeout: 0.10\n    scan_queue_size: 5",
         ).replace(
@@ -108,6 +112,13 @@ def generate_launch_description():
                 'footprint: "[[1.05, 0.35], [1.05, -0.45], '
                 '[-0.02, -0.45], [-0.02, 0.35]]"\n'
                 '      footprint_padding: __NAV2_BODY_CLEARANCE__'
+            ),
+            # The stock TurtleBot inflation field falls almost to free-space
+            # cost before this long rectangular chassis has room to turn.
+            # Keep a useful wall gradient for a full metre around obstacles;
+            # the footprint padding below remains the hard collision margin.
+            "        inflation_radius: 0.55": (
+                "        inflation_radius: 1.00"
             ),
             "max_vel_x: 0.26": "max_vel_x: 0.30",
             "bt_loop_duration: 10": "bt_loop_duration: 50",
@@ -183,6 +194,7 @@ def generate_launch_description():
     headless = LaunchConfiguration("headless")
     use_rviz = LaunchConfiguration("use_rviz")
     wall_distance = LaunchConfiguration("wall_distance")
+    inside_corner_clearance = LaunchConfiguration("inside_corner_clearance")
     wall_speed = LaunchConfiguration("wall_speed")
     wall_evaluation = LaunchConfiguration("wall_evaluation")
     wall_cooldown = LaunchConfiguration("wall_cooldown")
@@ -196,20 +208,29 @@ def generate_launch_description():
         ],
         output="screen",
     )
-    nav2_bringup = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(os.path.join(nav2_share, "launch", "bringup_launch.py")),
-        launch_arguments={
-            "slam": "True",
-            # Humble requires this argument even when SLAM ignores it.
-            "map": os.path.join(nav2_share, "maps", "turtlebot3_world.yaml"),
-            "params_file": nav2_params,
-            "use_sim_time": "True",
-            # SLAM and navigation are activated in order below. Controller
-            # configuration fails if it races SLAM's map -> odom transform.
-            "autostart": "False",
-            "use_composition": "False",
-        }.items(),
-    )
+    nav2_bringup = GroupAction(actions=[
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                os.path.join(nav2_share, "launch", "slam_launch.py")
+            ),
+            launch_arguments={
+                "params_file": nav2_params,
+                "use_sim_time": "True",
+                "autostart": "False",
+            }.items(),
+        ),
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(os.path.join(
+                driver_share, "launch", "navigation_launch_mux.launch.py"
+            )),
+            launch_arguments={
+                "params_file": nav2_params,
+                "use_sim_time": "True",
+                "autostart": "False",
+                "use_composition": "False",
+            }.items(),
+        ),
+    ])
     rviz = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(nav2_share, "launch", "rviz_launch.py")),
         condition=IfCondition(use_rviz),
@@ -229,10 +250,13 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument("headless", default_value="False"),
-        DeclareLaunchArgument("nav2_body_clearance", default_value="0.10"),
+        # A 0.20 m hard margin keeps the 0.80 m-wide body out of corridors
+        # narrower than the separately configured 1.20 m safety threshold.
+        DeclareLaunchArgument("nav2_body_clearance", default_value="0.20"),
         DeclareLaunchArgument("use_rviz", default_value="True"),
         DeclareLaunchArgument("world", default_value=default_world),
-        DeclareLaunchArgument("wall_distance", default_value="0.60"),
+        DeclareLaunchArgument("wall_distance", default_value="1.00"),
+        DeclareLaunchArgument("inside_corner_clearance", default_value="1.00"),
         DeclareLaunchArgument("wall_speed", default_value="0.28"),
         DeclareLaunchArgument("wall_evaluation", default_value="25.0"),
         DeclareLaunchArgument("wall_cooldown", default_value="300.0"),
@@ -287,12 +311,22 @@ def generate_launch_description():
         ),
         Node(
             package="create2_demo",
+            executable="exploration_coordinator.py",
+            name="exploration_coordinator",
+            parameters=[{"use_sim_time": True}],
+            output="screen",
+        ),
+        Node(
+            package="create2_demo",
             executable="clockwise_wall_tracer.py",
             name="clockwise_wall_tracer",
             condition=IfCondition(start_wall_follower),
             parameters=[{
                 "use_sim_time": True,
                 "target_wall_distance": ParameterValue(wall_distance, value_type=float),
+                "inside_corner_front_clearance": ParameterValue(
+                    inside_corner_clearance, value_type=float
+                ),
                 "linear_speed": ParameterValue(wall_speed, value_type=float),
                 "exploration_evaluation_period": ParameterValue(
                     wall_evaluation, value_type=float

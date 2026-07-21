@@ -24,7 +24,7 @@ robot when replaying.
 - separately managed Gazebo server/window with an **Open Gazebo** recovery button;
 - supervised frontier-based wandering to expand an active SLAM map;
 - merged `create2_demo` corridor-museum world, rectangular sweeper, scan
-  clearing, wall tracing, and OpenCV center-biased wandering mapper;
+  clearing, wall tracing, and supervised right-wall/frontier autonomous exploration;
 - coordinated OpenCV frontier planning and clockwise wall following using the
   tuned 1.05 m offset, 0.28 m/s speed, and `/wall_tracing_active` handoff;
 - Nav2-controlled wall acquisition that uses a robust straight-line fit for

@@ -35,7 +35,8 @@ class ClockwiseWallTracer(Node):
     def __init__(self):
         super().__init__("clockwise_wall_tracer")
         defaults = {
-            "target_wall_distance": 0.60,
+            "target_wall_distance": 1.00,
+            "inside_corner_front_clearance": 1.00,
             "front_stop_distance": 0.50,
             "linear_speed": 0.22,
             "turn_speed": 0.45,
@@ -59,6 +60,7 @@ class ClockwiseWallTracer(Node):
             "align_with_nav2": True,
             "alignment_settle_time": 0.75,
             "alignment_escape_clearance": 0.20,
+            "alignment_navigation_timeout": 30.0,
             "alignment_lead_in": 0.60,
             "nav2_wall_follow_distance": 3.0,
             "wall_fit_max_range": 8.0,
@@ -113,6 +115,8 @@ class ClockwiseWallTracer(Node):
         self._alignment_pending = False
         self._alignment_claimed_at = None
         self._alignment_goal_handle = None
+        self._alignment_started_at = None
+        self._alignment_safety_abort = False
         self._odometry_distance = 0.0
         self._corridor_entry_distance = 0.0
         self._dead_end_escape_remaining = 0.0
@@ -131,7 +135,9 @@ class ClockwiseWallTracer(Node):
         self._last_retrace_check = None
         self._trace_path = Path()
         self._trace_path.header.frame_id = "odom"
-        self._cmd = self.create_publisher(Twist, "/cmd_vel_nav", 10)
+        # The coordinator is the only /cmd_vel owner. Wall control has a
+        # private input channel and can no longer race Nav2 commands.
+        self._cmd = self.create_publisher(Twist, "/cmd_vel_wall", 10)
         self._active = self.create_publisher(Bool, "/wall_tracing_active", 10)
         self._state_pub = self.create_publisher(String, "/wall_behavior_state", 10)
         self._frontier_request_pub = self.create_publisher(
@@ -768,6 +774,8 @@ class ClockwiseWallTracer(Node):
         display_path.poses = request.poses
         self._alignment_path_pub.publish(display_path)
         self._alignment_pending = True
+        self._alignment_started_at = now
+        self._alignment_safety_abort = False
         self._set_state("nav2_align_parallel_to_right_wall")
         self.get_logger().info(
             f"Nav2 aligning to a right wall with "
@@ -791,11 +799,26 @@ class ClockwiseWallTracer(Node):
         self._alignment_goal_handle = handle
         result = handle.get_result_async()
         result.add_done_callback(self._alignment_goal_result)
+        if self._alignment_safety_abort:
+            handle.cancel_goal_async()
 
     def _alignment_goal_result(self, future):
         result = future.result()
         self._alignment_goal_handle = None
         self._alignment_pending = False
+        self._alignment_started_at = None
+        if self._alignment_safety_abort and not self._returning_home:
+            self._alignment_safety_abort = False
+            self._alignment_complete = True
+            self._alignment_claimed_at = None
+            self._progress_pose = self._pose
+            self._progress_time = self.get_clock().now()
+            self._set_state("wall_alignment_aborted_to_safe_direct_control")
+            self.get_logger().warn(
+                "Nav2 wall alignment aborted; footprint-aware direct wall "
+                "control is taking over."
+            )
+            return
         if result is not None and result.status == 4 and not self._returning_home:
             wall = self._current_right_wall()
             if self._wall_is_handoff_eligible(wall):
@@ -884,6 +907,38 @@ class ClockwiseWallTracer(Node):
             # commands at 10 Hz, leaving the Gazebo wheels almost stationary
             # until the progress checker aborted alignment and recovery.
             if self._alignment_pending:
+                wall_clearance = (
+                    self._wall_clearance(wall[0], wall[1])
+                    if wall is not None else math.inf
+                )
+                timeout = float(
+                    self.get_parameter("alignment_navigation_timeout").value
+                )
+                timed_out = (
+                    self._alignment_started_at is not None
+                    and (now - self._alignment_started_at).nanoseconds / 1e9
+                    >= timeout
+                )
+                unsafe = (
+                    front_distance < float(
+                        self.get_parameter("front_stop_distance").value
+                    )
+                    or wall_clearance < float(
+                        self.get_parameter("emergency_front_distance").value
+                    )
+                )
+                if unsafe or timed_out:
+                    self._alignment_safety_abort = True
+                    if self._alignment_goal_handle is not None:
+                        self._alignment_goal_handle.cancel_goal_async()
+                    self._cmd.publish(Twist())
+                    reason = "unsafe body clearance" if unsafe else "30 s timeout"
+                    self._set_state("cancel_nav2_alignment_for_safety")
+                    self.get_logger().warn(
+                        f"Canceling Nav2 wall alignment: {reason}.",
+                        throttle_duration_sec=2.0,
+                    )
+                    return
                 self._active.publish(Bool(data=True))
                 self._set_state("nav2_align_parallel_to_right_wall")
                 return
@@ -902,18 +957,27 @@ class ClockwiseWallTracer(Node):
             )
             if wall_clearance < escape_clearance:
                 # Nav2 correctly refuses every trajectory when its padded
-                # footprint begins in collision. Rotate counterclockwise under
-                # direct control first; the forward footprint swings away from
-                # the right wall without advancing farther into it.
+                # footprint begins in collision.  An in-place turn can remain
+                # pinned indefinitely because a rectangular chassis sweeps a
+                # corner into the wall.  Crawl forward on a left arc when the
+                # complete forward footprint is clear; translation then grows
+                # right-side clearance while rotation points the robot away.
                 self._alignment_claimed_at = None
                 self._set_state("wall_clearance_escape_before_nav2")
                 command = Twist()
+                if front_distance > float(
+                    self.get_parameter("front_stop_distance").value
+                ):
+                    command.linear.x = min(
+                        0.08,
+                        float(self.get_parameter("linear_speed").value),
+                    )
                 command.angular.z = float(
                     self.get_parameter("turn_speed").value
                 )
                 self._cmd.publish(command)
                 self.get_logger().warn(
-                    f"Only {wall_clearance:.2f} m body clearance; rotating "
+                    f"Only {wall_clearance:.2f} m body clearance; arcing "
                     f"away from the wall until {escape_clearance:.2f} m "
                     "before asking Nav2 to align.",
                     throttle_duration_sec=2.0,
@@ -997,6 +1061,37 @@ class ClockwiseWallTracer(Node):
                 self._cmd.publish(command)
                 return
 
+        right_front = self._sector_body_clearance(
+            ranges, angles, -70.0, -15.0
+        )
+        # An inside corner's front wall becomes the new right wall after the
+        # left turn. Begin the maneuver at the requested wall-follow clearance
+        # so the completed turn does not leave the chassis pinned too close.
+        corner_turn_clearance = max(
+            float(self.get_parameter("front_stop_distance").value),
+            float(
+                self.get_parameter("inside_corner_front_clearance").value
+            ),
+        )
+        open_right_at_front = (
+            self._yaw is not None
+            and front_distance < 1.5 * corner_turn_clearance
+            and front_distance > float(
+                self.get_parameter("emergency_front_distance").value
+            )
+            and right_front >= float(
+                self.get_parameter("revisited_right_turn_clearance").value
+            )
+        )
+        if open_right_at_front:
+            self._start_outside_corner(
+                now,
+                "Front wall with footprint-safe open right branch; giving "
+                "the clockwise turn priority over the narrow-corridor fallback.",
+            )
+            self._cmd.publish(self._run_outside_corner(ranges, angles, now))
+            return
+
         narrow_corridor = self._narrow_corridor_ahead(ranges, angles, now)
         if narrow_corridor is not None:
             entrance_distance, measured_width = narrow_corridor
@@ -1008,9 +1103,7 @@ class ClockwiseWallTracer(Node):
                 x for x, _ in self._FOOTPRINT_FROM_LASER
             )
             front_distance = min(front_distance, entrance_clearance)
-            if front_distance < float(
-                self.get_parameter("front_stop_distance").value
-            ):
+            if front_distance < corner_turn_clearance:
                 self._outside_corner_start_yaw = None
                 self._outside_corner_started_at = None
                 self._right_side_lost_since = None
@@ -1036,15 +1129,10 @@ class ClockwiseWallTracer(Node):
             self._cmd.publish(self._run_outside_corner(ranges, angles, now))
             return
 
-        right_front = self._sector_body_clearance(
-            ranges, angles, -70.0, -15.0
-        )
         revisited_right_turn = (
             self._yaw is not None
             and self._approaching_prior_trace(now)
-            and front_distance < 1.5 * float(
-                self.get_parameter("front_stop_distance").value
-            )
+            and front_distance < 1.5 * corner_turn_clearance
             and front_distance > float(
                 self.get_parameter("emergency_front_distance").value
             )
@@ -1074,9 +1162,7 @@ class ClockwiseWallTracer(Node):
 
         dead_end = (
             not self._dead_end_escape_active
-            and front_distance < float(
-                self.get_parameter("front_stop_distance").value
-            )
+            and front_distance < corner_turn_clearance
             and wall is not None
             and self._side_wall_present(ranges, angles, left=True)
         )
@@ -1092,9 +1178,7 @@ class ClockwiseWallTracer(Node):
             self._set_state("backup")
             command.linear.x = -float(self.get_parameter("backup_speed").value)
         elif (
-            front_distance < float(
-                self.get_parameter("front_stop_distance").value
-            )
+            front_distance < corner_turn_clearance
             and self._right_turn_priority_until is not None
             and now < self._right_turn_priority_until
             and front_distance > float(
@@ -1108,9 +1192,7 @@ class ClockwiseWallTracer(Node):
             command.angular.z = -float(
                 self.get_parameter("outside_corner_turn_speed").value
             )
-        elif front_distance < float(
-            self.get_parameter("front_stop_distance").value
-        ):
+        elif front_distance < corner_turn_clearance:
             self._set_state("inside_corner_left_90")
             command.linear.x = 0.04
             command.angular.z = float(self.get_parameter("turn_speed").value)

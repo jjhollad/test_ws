@@ -93,6 +93,13 @@ class ScanClearer(Node):
                 throttle_duration_sec=2.0,
             )
             return
+        if age < -maximum_age:
+            self.get_logger().warn(
+                f"Rejecting LiDAR sample {abs(age):.3f} s in the future; "
+                "waiting for the simulation clock to catch up.",
+                throttle_duration_sec=2.0,
+            )
+            return
         filtered = self._copy_scan(message)
         # Gazebo's ray sensor callback precedes the matching 50 Hz odometry
         # publication. A small simulation-only offset lets TF message filters
@@ -102,7 +109,13 @@ class ScanClearer(Node):
             self.get_parameter("stamp_offset_seconds").value
         )
         if stamp_offset:
-            corrected_ns = stamp_ns + int(stamp_offset * 1e9)
+            # Never publish a sensor measurement in the future. The offset is
+            # only intended to join a ray callback to the odometry update from
+            # the same Gazebo cycle, not to manufacture future sensor data.
+            corrected_ns = min(
+                stamp_ns + int(stamp_offset * 1e9),
+                self.get_clock().now().nanoseconds,
+            )
             filtered.header.stamp.sec = corrected_ns // 1_000_000_000
             filtered.header.stamp.nanosec = corrected_ns % 1_000_000_000
         filtered.ranges = []
