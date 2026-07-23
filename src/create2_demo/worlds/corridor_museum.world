@@ -1,0 +1,92 @@
+<?xml version="1.0"?>
+<sdf version="1.6">
+  <world name="corridor_museum">
+    <include><uri>model://sun</uri></include>
+    <physics name="default_physics" type="ode">
+      <!-- Make the intended one-second simulation/one-second wall-time ratio
+           explicit.  Sensor and odometry rates divide evenly into this step. -->
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>1000</real_time_update_rate>
+      <max_step_size>0.001</max_step_size>
+    </physics>
+    <scene>
+      <ambient>0.55 0.55 0.55 1</ambient>
+      <background>0.75 0.80 0.88 1</background>
+      <shadows>true</shadows>
+    </scene>
+
+    <model name="museum_building">
+      <static>true</static>
+      <link name="structure">
+        <!-- 36 x 28 metre floor. -->
+        <collision name="floor_collision"><pose>0 0 -0.10 0 0 0</pose><geometry><box><size>36 28 0.2</size></box></geometry></collision>
+        <visual name="floor_visual"><pose>0 0 -0.10 0 0 0</pose><geometry><box><size>36 28 0.2</size></box></geometry><material><ambient>0.72 0.72 0.68 1</ambient><diffuse>0.72 0.72 0.68 1</diffuse></material></visual>
+
+        <!-- Outer shell. Wall height 2.5 m, thickness 0.2 m. -->
+        <collision name="north_c"><pose>0 14 1.25 0 0 0</pose><geometry><box><size>36 0.2 2.5</size></box></geometry></collision>
+        <visual name="north_v"><pose>0 14 1.25 0 0 0</pose><geometry><box><size>36 0.2 2.5</size></box></geometry><material><ambient>0.80 0.82 0.84 1</ambient><diffuse>0.80 0.82 0.84 1</diffuse></material></visual>
+        <collision name="south_c"><pose>0 -14 1.25 0 0 0</pose><geometry><box><size>36 0.2 2.5</size></box></geometry></collision>
+        <visual name="south_v"><pose>0 -14 1.25 0 0 0</pose><geometry><box><size>36 0.2 2.5</size></box></geometry><material><ambient>0.80 0.82 0.84 1</ambient><diffuse>0.80 0.82 0.84 1</diffuse></material></visual>
+        <collision name="east_c"><pose>18 0 1.25 0 0 0</pose><geometry><box><size>0.2 28 2.5</size></box></geometry></collision>
+        <visual name="east_v"><pose>18 0 1.25 0 0 0</pose><geometry><box><size>0.2 28 2.5</size></box></geometry><material><ambient>0.80 0.82 0.84 1</ambient><diffuse>0.80 0.82 0.84 1</diffuse></material></visual>
+        <collision name="west_c"><pose>-18 0 1.25 0 0 0</pose><geometry><box><size>0.2 28 2.5</size></box></geometry></collision>
+        <visual name="west_v"><pose>-18 0 1.25 0 0 0</pose><geometry><box><size>0.2 28 2.5</size></box></geometry><material><ambient>0.80 0.82 0.84 1</ambient><diffuse>0.80 0.82 0.84 1</diffuse></material></visual>
+
+        <!-- Long central east-west corridor, 3 m clear width. -->
+        <collision name="central_n_c"><pose>0 1.6 1.25 0 0 0</pose><geometry><box><size>27 0.2 2.5</size></box></geometry></collision>
+        <visual name="central_n_v"><pose>0 1.6 1.25 0 0 0</pose><geometry><box><size>27 0.2 2.5</size></box></geometry><material><ambient>0.70 0.78 0.86 1</ambient><diffuse>0.70 0.78 0.86 1</diffuse></material></visual>
+        <collision name="central_s_c"><pose>0 -1.6 1.25 0 0 0</pose><geometry><box><size>27 0.2 2.5</size></box></geometry></collision>
+        <visual name="central_s_v"><pose>0 -1.6 1.25 0 0 0</pose><geometry><box><size>27 0.2 2.5</size></box></geometry><material><ambient>0.70 0.78 0.86 1</ambient><diffuse>0.70 0.78 0.86 1</diffuse></material></visual>
+
+        <!-- North wing: two parallel corridors connected at both ends. -->
+        <collision name="north_mid_c"><pose>0 7.0 1.25 0 0 0</pose><geometry><box><size>25 0.2 2.5</size></box></geometry></collision>
+        <visual name="north_mid_v"><pose>0 7.0 1.25 0 0 0</pose><geometry><box><size>25 0.2 2.5</size></box></geometry><material><ambient>0.86 0.76 0.65 1</ambient><diffuse>0.86 0.76 0.65 1</diffuse></material></visual>
+        <collision name="north_upper_c"><pose>0 11.0 1.25 0 0 0</pose><geometry><box><size>25 0.2 2.5</size></box></geometry></collision>
+        <visual name="north_upper_v"><pose>0 11.0 1.25 0 0 0</pose><geometry><box><size>25 0.2 2.5</size></box></geometry><material><ambient>0.86 0.76 0.65 1</ambient><diffuse>0.86 0.76 0.65 1</diffuse></material></visual>
+
+        <!-- South wing: gallery corridors with offset intersections. -->
+        <collision name="south_mid_c"><pose>0 -6.5 1.25 0 0 0</pose><geometry><box><size>25 0.2 2.5</size></box></geometry></collision>
+        <visual name="south_mid_v"><pose>0 -6.5 1.25 0 0 0</pose><geometry><box><size>25 0.2 2.5</size></box></geometry><material><ambient>0.68 0.82 0.72 1</ambient><diffuse>0.68 0.82 0.72 1</diffuse></material></visual>
+        <collision name="south_lower_c"><pose>0 -10.5 1.25 0 0 0</pose><geometry><box><size>25 0.2 2.5</size></box></geometry></collision>
+        <visual name="south_lower_v"><pose>0 -10.5 1.25 0 0 0</pose><geometry><box><size>25 0.2 2.5</size></box></geometry><material><ambient>0.68 0.82 0.72 1</ambient><diffuse>0.68 0.82 0.72 1</diffuse></material></visual>
+
+        <!-- Vertical walls create cross-corridors; gaps are wide doorways. -->
+        <collision name="v1a_c"><pose>-12 4.3 1.25 0 0 0</pose><geometry><box><size>0.2 5.4 2.5</size></box></geometry></collision>
+        <visual name="v1a_v"><pose>-12 4.3 1.25 0 0 0</pose><geometry><box><size>0.2 5.4 2.5</size></box></geometry><material><ambient>0.78 0.72 0.84 1</ambient><diffuse>0.78 0.72 0.84 1</diffuse></material></visual>
+        <collision name="v1b_c"><pose>-12 12.5 1.25 0 0 0</pose><geometry><box><size>0.2 3.0 2.5</size></box></geometry></collision>
+        <visual name="v1b_v"><pose>-12 12.5 1.25 0 0 0</pose><geometry><box><size>0.2 3.0 2.5</size></box></geometry><material><ambient>0.78 0.72 0.84 1</ambient><diffuse>0.78 0.72 0.84 1</diffuse></material></visual>
+        <collision name="v2_c"><pose>-6 9.0 1.25 0 0 0</pose><geometry><box><size>0.2 4.0 2.5</size></box></geometry></collision>
+        <visual name="v2_v"><pose>-6 9.0 1.25 0 0 0</pose><geometry><box><size>0.2 4.0 2.5</size></box></geometry><material><ambient>0.78 0.72 0.84 1</ambient><diffuse>0.78 0.72 0.84 1</diffuse></material></visual>
+        <collision name="v3_c"><pose>0 4.3 1.25 0 0 0</pose><geometry><box><size>0.2 5.4 2.5</size></box></geometry></collision>
+        <visual name="v3_v"><pose>0 4.3 1.25 0 0 0</pose><geometry><box><size>0.2 5.4 2.5</size></box></geometry><material><ambient>0.78 0.72 0.84 1</ambient><diffuse>0.78 0.72 0.84 1</diffuse></material></visual>
+        <collision name="v4_c"><pose>7 9.0 1.25 0 0 0</pose><geometry><box><size>0.2 4.0 2.5</size></box></geometry></collision>
+        <visual name="v4_v"><pose>7 9.0 1.25 0 0 0</pose><geometry><box><size>0.2 4.0 2.5</size></box></geometry><material><ambient>0.78 0.72 0.84 1</ambient><diffuse>0.78 0.72 0.84 1</diffuse></material></visual>
+        <collision name="v5_c"><pose>12 4.3 1.25 0 0 0</pose><geometry><box><size>0.2 5.4 2.5</size></box></geometry></collision>
+        <visual name="v5_v"><pose>12 4.3 1.25 0 0 0</pose><geometry><box><size>0.2 5.4 2.5</size></box></geometry><material><ambient>0.78 0.72 0.84 1</ambient><diffuse>0.78 0.72 0.84 1</diffuse></material></visual>
+
+        <collision name="sv1_c"><pose>-12 -8.5 1.25 0 0 0</pose><geometry><box><size>0.2 4.0 2.5</size></box></geometry></collision>
+        <visual name="sv1_v"><pose>-12 -8.5 1.25 0 0 0</pose><geometry><box><size>0.2 4.0 2.5</size></box></geometry><material><ambient>0.84 0.70 0.70 1</ambient><diffuse>0.84 0.70 0.70 1</diffuse></material></visual>
+        <collision name="sv2_c"><pose>-5 -4.0 1.25 0 0 0</pose><geometry><box><size>0.2 5.0 2.5</size></box></geometry></collision>
+        <visual name="sv2_v"><pose>-5 -4.0 1.25 0 0 0</pose><geometry><box><size>0.2 5.0 2.5</size></box></geometry><material><ambient>0.84 0.70 0.70 1</ambient><diffuse>0.84 0.70 0.70 1</diffuse></material></visual>
+        <collision name="sv3_c"><pose>3 -8.5 1.25 0 0 0</pose><geometry><box><size>0.2 4.0 2.5</size></box></geometry></collision>
+        <visual name="sv3_v"><pose>3 -8.5 1.25 0 0 0</pose><geometry><box><size>0.2 4.0 2.5</size></box></geometry><material><ambient>0.84 0.70 0.70 1</ambient><diffuse>0.84 0.70 0.70 1</diffuse></material></visual>
+        <collision name="sv4_c"><pose>11 -4.0 1.25 0 0 0</pose><geometry><box><size>0.2 5.0 2.5</size></box></geometry></collision>
+        <visual name="sv4_v"><pose>11 -4.0 1.25 0 0 0</pose><geometry><box><size>0.2 5.0 2.5</size></box></geometry><material><ambient>0.84 0.70 0.70 1</ambient><diffuse>0.84 0.70 0.70 1</diffuse></material></visual>
+
+        <!-- Exhibit islands provide realistic lidar obstacles and route choices. -->
+        <collision name="display1_c"><pose>-8 4.3 0.55 0 0 0</pose><geometry><box><size>2.2 1.0 1.1</size></box></geometry></collision>
+        <visual name="display1_v"><pose>-8 4.3 0.55 0 0 0</pose><geometry><box><size>2.2 1.0 1.1</size></box></geometry><material><ambient>0.35 0.40 0.50 1</ambient><diffuse>0.35 0.40 0.50 1</diffuse></material></visual>
+        <collision name="display2_c"><pose>6 4.3 0.55 0 0 0</pose><geometry><box><size>2.2 1.0 1.1</size></box></geometry></collision>
+        <visual name="display2_v"><pose>6 4.3 0.55 0 0 0</pose><geometry><box><size>2.2 1.0 1.1</size></box></geometry><material><ambient>0.35 0.40 0.50 1</ambient><diffuse>0.35 0.40 0.50 1</diffuse></material></visual>
+        <collision name="display3_c"><pose>-8 -8.5 0.55 0 0 0</pose><geometry><box><size>2.0 1.0 1.1</size></box></geometry></collision>
+        <visual name="display3_v"><pose>-8 -8.5 0.55 0 0 0</pose><geometry><box><size>2.0 1.0 1.1</size></box></geometry><material><ambient>0.35 0.40 0.50 1</ambient><diffuse>0.35 0.40 0.50 1</diffuse></material></visual>
+        <collision name="display4_c"><pose>8 -8.5 0.55 0 0 0</pose><geometry><box><size>2.0 1.0 1.1</size></box></geometry></collision>
+        <visual name="display4_v"><pose>8 -8.5 0.55 0 0 0</pose><geometry><box><size>2.0 1.0 1.1</size></box></geometry><material><ambient>0.35 0.40 0.50 1</ambient><diffuse>0.35 0.40 0.50 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <gui fullscreen="0">
+      <camera name="overview"><pose>0 -31 31 0 0.72 1.57</pose></camera>
+    </gui>
+  </world>
+</sdf>

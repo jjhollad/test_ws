@@ -145,6 +145,31 @@
   <gazebo reference="front_caster_wheel">
     <mu1>0.0</mu1>
     <mu2>0.0</mu2>
+    <!-- Dampen the rigid sphere/ground contact.  Gazebo's stiff defaults can
+         inject vertical energy into a heavy three-contact-point chassis. -->
+    <kp>100000.0</kp>
+    <kd>100.0</kd>
+    <maxVel>0.05</maxVel>
+    <minDepth>0.001</minDepth>
+  </gazebo>
+
+  <!-- Driven wheels need predictable longitudinal contact and damped normal
+       contact; otherwise the diff-drive controller can excite chassis hop. -->
+  <gazebo reference="left_rear_wheel">
+    <mu1>1.0</mu1>
+    <mu2>1.0</mu2>
+    <kp>100000.0</kp>
+    <kd>100.0</kd>
+    <maxVel>0.05</maxVel>
+    <minDepth>0.001</minDepth>
+  </gazebo>
+  <gazebo reference="right_rear_wheel">
+    <mu1>1.0</mu1>
+    <mu2>1.0</mu2>
+    <kp>100000.0</kp>
+    <kd>100.0</kd>
+    <maxVel>0.05</maxVel>
+    <minDepth>0.001</minDepth>
   </gazebo>
 
   <!-- Sweeping Wheel (parallel to floor - horizontal cylinder) -->
@@ -223,4 +248,3 @@
   <xacro:sim_lidar/>
 
 </robot>
-

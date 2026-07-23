@@ -1,0 +1,175 @@
+<?xml version="1.0"?>
+<robot name="rectangular_sweeper" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <!-- Self-contained demo copy derived from test_ws/create_description. -->
+  <xacro:property name="base_length" value="0.80"/>
+  <xacro:property name="base_width" value="0.60"/>
+  <xacro:property name="base_height" value="0.10"/>
+  <xacro:property name="wheel_radius" value="0.12"/>
+  <xacro:property name="wheel_width" value="0.05"/>
+  <xacro:property name="wheel_separation" value="0.57"/>
+
+  <material name="blue"><color rgba="0.1 0.25 0.9 1"/></material>
+  <material name="black"><color rgba="0.03 0.03 0.03 1"/></material>
+  <material name="gray"><color rgba="0.45 0.45 0.45 1"/></material>
+  <material name="orange"><color rgba="1 0.45 0.05 1"/></material>
+
+  <link name="base_footprint"/>
+  <link name="base_link">
+    <visual>
+      <origin xyz="${base_length / 2} 0 ${wheel_radius + base_height / 2}"/>
+      <geometry><box size="${base_length} ${base_width} ${base_height}"/></geometry>
+      <material name="blue"/>
+    </visual>
+    <collision name="base_link_collision">
+      <origin xyz="${base_length / 2} 0 ${wheel_radius + base_height / 2}"/>
+      <geometry><box size="${base_length} ${base_width} ${base_height}"/></geometry>
+    </collision>
+    <inertial>
+      <origin xyz="${base_length / 2} 0 ${wheel_radius + base_height / 2}"/>
+      <mass value="25.0"/>
+      <inertia ixx="0.77" ixy="0" ixz="0" iyy="1.36" iyz="0" izz="1.04"/>
+    </inertial>
+  </link>
+  <joint name="base_footprint_joint" type="fixed">
+    <parent link="base_footprint"/><child link="base_link"/>
+    <origin xyz="${wheel_radius} 0 0"/>
+  </joint>
+
+  <!-- Report chassis impacts without treating normal wheel/ground contact as
+       a collision event.  The monitor records what the robot was doing and
+       what its LiDAR saw immediately before this sensor fired. -->
+  <gazebo reference="base_link">
+    <sensor name="chassis_contact_sensor" type="contact">
+      <always_on>true</always_on>
+      <update_rate>50</update_rate>
+      <contact><collision>base_link_collision</collision></contact>
+      <plugin name="chassis_contact_plugin" filename="libgazebo_ros_bumper.so">
+        <ros><remapping>bumper_states:=chassis_contacts</remapping></ros>
+        <frame_name>base_link</frame_name>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+  <xacro:macro name="drive_wheel" params="side y">
+    <link name="${side}_rear_wheel">
+      <visual>
+        <origin rpy="${pi / 2} 0 0"/>
+        <geometry><cylinder radius="${wheel_radius}" length="${wheel_width}"/></geometry>
+        <material name="black"/>
+      </visual>
+      <collision name="${side}_rear_wheel_collision">
+        <origin rpy="${pi / 2} 0 0"/>
+        <geometry><cylinder radius="${wheel_radius}" length="${wheel_width}"/></geometry>
+      </collision>
+      <inertial>
+        <mass value="2.0"/>
+        <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.015" iyz="0" izz="0.01"/>
+      </inertial>
+    </link>
+    <joint name="${side}_rear_wheel_joint" type="continuous">
+      <parent link="base_link"/><child link="${side}_rear_wheel"/>
+      <origin xyz="${wheel_radius} ${y} ${wheel_radius}"/>
+      <axis xyz="0 1 0"/>
+    </joint>
+    <gazebo reference="${side}_rear_wheel">
+      <mu1>1.0</mu1><mu2>1.0</mu2>
+      <kp>1000000.0</kp><kd>100.0</kd>
+      <maxVel>0.01</maxVel><minDepth>0.001</minDepth>
+      <sensor name="${side}_rear_wheel_contact_sensor" type="contact">
+        <always_on>true</always_on>
+        <update_rate>50</update_rate>
+        <contact><collision>${side}_rear_wheel_collision</collision></contact>
+        <plugin name="${side}_rear_wheel_contact_plugin" filename="libgazebo_ros_bumper.so">
+          <ros><remapping>bumper_states:=${side}_rear_wheel_contacts</remapping></ros>
+          <frame_name>${side}_rear_wheel</frame_name>
+        </plugin>
+      </sensor>
+    </gazebo>
+  </xacro:macro>
+  <xacro:drive_wheel side="left" y="${wheel_separation / 2}"/>
+  <xacro:drive_wheel side="right" y="${-wheel_separation / 2}"/>
+
+  <link name="front_caster_wheel">
+    <visual><geometry><sphere radius="${wheel_radius}"/></geometry><material name="gray"/></visual>
+    <collision name="front_caster_collision"><geometry><sphere radius="${wheel_radius}"/></geometry></collision>
+    <inertial><mass value="0.5"/><inertia ixx="0.003" ixy="0" ixz="0" iyy="0.003" iyz="0" izz="0.003"/></inertial>
+  </link>
+  <joint name="front_caster_wheel_joint" type="fixed">
+    <parent link="base_link"/><child link="front_caster_wheel"/>
+    <origin xyz="${base_length} 0 ${wheel_radius}"/>
+  </joint>
+  <gazebo reference="front_caster_wheel">
+    <mu1>0.0</mu1><mu2>0.0</mu2>
+    <!-- Stiff contact limits visible ground penetration and dynamic pitching. -->
+    <kp>1000000.0</kp><kd>100.0</kd>
+    <maxVel>0.01</maxVel><minDepth>0.001</minDepth>
+    <!-- The caster protrudes ahead of the chassis and can be the first robot
+         part to hit a wall. The logger filters its normal floor contact. -->
+    <sensor name="front_caster_contact_sensor" type="contact">
+      <always_on>true</always_on>
+      <update_rate>50</update_rate>
+      <contact><collision>front_caster_collision</collision></contact>
+      <plugin name="front_caster_contact_plugin" filename="libgazebo_ros_bumper.so">
+        <ros><remapping>bumper_states:=front_caster_contacts</remapping></ros>
+        <frame_name>front_caster_wheel</frame_name>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+  <link name="sweeping_wheel">
+    <visual>
+      <geometry><cylinder radius="0.15" length="0.03"/></geometry>
+      <material name="orange"/>
+    </visual>
+    <inertial><mass value="0.0001"/><inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/></inertial>
+  </link>
+  <joint name="sweeping_wheel_joint" type="fixed">
+    <parent link="base_link"/><child link="sweeping_wheel"/>
+    <origin xyz="${base_length} -0.275 0.15"/>
+  </joint>
+
+  <link name="laser_frame">
+    <visual><geometry><cylinder radius="0.04" length="0.05"/></geometry><material name="black"/></visual>
+    <collision><geometry><cylinder radius="0.04" length="0.05"/></geometry></collision>
+    <inertial><mass value="0.1"/><inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/></inertial>
+  </link>
+  <joint name="laser_joint" type="fixed">
+    <parent link="base_link"/><child link="laser_frame"/>
+    <origin xyz="${wheel_radius} 0 0.35"/>
+  </joint>
+
+  <gazebo reference="laser_frame">
+    <sensor name="laser" type="ray">
+      <!-- Keep sensor activation independent of Gazebo rendering/client state. -->
+      <!-- Five hertz is above the two-hertz SLAM processing limit and divides
+           exactly into the 50 Hz odometry cadence without queuing unused scans. -->
+      <pose>0 0 0 0 0 0</pose><always_on>true</always_on><visualize>true</visualize><update_rate>5</update_rate>
+      <ray>
+        <scan><horizontal><samples>360</samples><resolution>1</resolution><min_angle>-${pi}</min_angle><max_angle>${pi}</max_angle></horizontal></scan>
+        <range><min>0.12</min><max>12.0</max><resolution>0.01</resolution></range>
+      </ray>
+      <plugin name="laser_controller" filename="libgazebo_ros_ray_sensor.so">
+        <!-- Keep Gazebo's unfiltered measurements private to the self-filter. -->
+        <ros><remapping>~/out:=scan_raw</remapping></ros>
+        <output_type>sensor_msgs/LaserScan</output_type><frame_name>laser_frame</frame_name>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+  <gazebo>
+    <plugin name="diff_drive_controller" filename="libgazebo_ros_diff_drive.so">
+      <ros><remapping>cmd_vel:=cmd_vel</remapping><remapping>odom:=odom</remapping></ros>
+      <update_rate>50</update_rate>
+      <left_joint>left_rear_wheel_joint</left_joint><right_joint>right_rear_wheel_joint</right_joint>
+      <wheel_separation>${wheel_separation}</wheel_separation><wheel_diameter>${2 * wheel_radius}</wheel_diameter>
+      <max_wheel_torque>30</max_wheel_torque><max_wheel_acceleration>3</max_wheel_acceleration><command_timeout>0.25</command_timeout>
+      <publish_odom>true</publish_odom><publish_odom_tf>true</publish_odom_tf>
+      <odometry_frame>odom</odometry_frame><robot_base_frame>base_footprint</robot_base_frame>
+    </plugin>
+    <plugin name="joint_state_publisher" filename="libgazebo_ros_joint_state_publisher.so">
+      <ros><remapping>~/out:=joint_states</remapping></ros>
+      <update_rate>50</update_rate>
+      <joint_name>left_rear_wheel_joint</joint_name><joint_name>right_rear_wheel_joint</joint_name>
+    </plugin>
+  </gazebo>
+</robot>

@@ -5,8 +5,15 @@ import os
 from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, SetEnvironmentVariable
+from launch.actions import (
+    DeclareLaunchArgument,
+    ExecuteProcess,
+    IncludeLaunchDescription,
+    RegisterEventHandler,
+    SetEnvironmentVariable,
+)
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, Command, PythonExpression
 from launch_ros.actions import Node
@@ -165,10 +172,19 @@ def generate_launch_description():
         spawn_x_arg,
         spawn_y_arg,
         spawn_z_arg,
+        robot_state_publisher_node,
         gazebo_server,
         gazebo_client,
-        robot_state_publisher_node,
         spawn_robot,
-        nav2_bringup,
-        rviz,
+        # Do not start Nav2 before Gazebo has spawned the robot.  Starting all
+        # three concurrently lets Nav2 initialize against wall time and then
+        # jump backwards when /clock appears.  That produces TF_OLD_DATA
+        # storms, can time out controller_server configuration, and makes the
+        # robot/map flash around in RViz.
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=spawn_robot,
+                on_exit=[nav2_bringup, rviz],
+            )
+        ),
     ])
