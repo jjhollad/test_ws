@@ -18,9 +18,17 @@ from robot_run_manager.main import (
     ACTION_GROUPS,
     ACTION_TOOLTIPS,
     IMPLEMENTED_ACTIONS,
+    SIMULATION_WORLDS,
     TUNING_VARIABLES,
     find_autonomy_workspace,
 )
+
+
+def test_simulation_world_menu_uses_installed_big_sweep_worlds():
+    assert SIMULATION_WORLDS == {
+        'Current obstacle field': 'turtlebot3_world_spacious.world',
+        'Corridor building': 'square_building_10ft_hallway.world',
+    }
 
 
 def test_every_implemented_action_has_a_button():

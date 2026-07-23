@@ -693,6 +693,11 @@ LOCALIZATION_PROFILE_VALUES = {
     'emergency_front_distance': 0.15,
 }
 
+SIMULATION_WORLDS = {
+    'Current obstacle field': 'turtlebot3_world_spacious.world',
+    'Corridor building': 'square_building_10ft_hallway.world',
+}
+
 
 def find_workspace():
     """Find the source workspace without assuming the same home directory."""
@@ -853,6 +858,22 @@ class RunManagerWindow(QMainWindow):
         role_layout.addWidget(self.gazebo_fps_selector, 0, 4)
         self.process_label = QLabel('Managed processes: none')
         role_layout.addWidget(self.process_label, 0, 5)
+        role_layout.addWidget(QLabel('Simulation world:'), 1, 0)
+        self.world_selector = QComboBox()
+        self.world_selector.addItems(SIMULATION_WORLDS.keys())
+        saved_world = self.settings.value(
+            'simulation/world', 'Current obstacle field', type=str
+        )
+        if saved_world not in SIMULATION_WORLDS:
+            saved_world = 'Current obstacle field'
+        self.world_selector.setCurrentText(saved_world)
+        self.world_selector.setToolTip(
+            'Select the Gazebo world used the next time simulation starts.'
+        )
+        self.world_selector.currentTextChanged.connect(
+            lambda value: self.settings.setValue('simulation/world', value)
+        )
+        role_layout.addWidget(self.world_selector, 1, 1, 1, 2)
         role_layout.setColumnStretch(5, 1)
         root_layout.addLayout(role_layout)
 
@@ -1317,6 +1338,9 @@ class RunManagerWindow(QMainWindow):
         self.settings.setValue(
             'simulation/gazebo_gui_fps', self.gazebo_fps_selector.currentText()
         )
+        self.settings.setValue(
+            'simulation/world', self.world_selector.currentText()
+        )
         self.settings.sync()
         if self.settings.status() != QSettings.NoError:
             self.output.appendPlainText(
@@ -1719,8 +1743,11 @@ class RunManagerWindow(QMainWindow):
                 ('Gazebo package', self._check_ros_package('gazebo_ros'), True),
                 ('Nav2 package', self._check_ros_package('nav2_bringup'), True),
                 (
-                    'Merged create2_demo package',
-                    self._check_ros_package('create2_demo'),
+                    'BigSweep simulation overlay',
+                    self.autonomy_workspace is not None
+                    and (
+                        self.autonomy_workspace / 'install' / 'setup.bash'
+                    ).is_file(),
                     True,
                 ),
             ])
@@ -2276,20 +2303,46 @@ class RunManagerWindow(QMainWindow):
             or self._is_running('mapping')
         ):
             return
+        if self.autonomy_workspace is None:
+            QMessageBox.critical(
+                self,
+                'Simulation workspace unavailable',
+                'The manager could not find the BigSweep workspace. Set '
+                'BIGSWEEP_WORKSPACE or place it at ~/BigSweepLogic.',
+            )
+            return
+        setup_file = self.autonomy_workspace / 'install' / 'setup.bash'
+        if not setup_file.is_file():
+            QMessageBox.critical(
+                self,
+                'Simulation workspace is not built',
+                f'Build {self.autonomy_workspace} before starting simulation.',
+            )
+            return
+        world_name = self.world_selector.currentText()
+        world_file = (
+            self.autonomy_workspace
+            / 'install/generic_motor_driver/share/generic_motor_driver/worlds'
+            / SIMULATION_WORLDS[world_name]
+        )
+        if not world_file.is_file():
+            QMessageBox.critical(
+                self,
+                'Simulation world unavailable',
+                f'The selected world is not installed: {world_file}',
+            )
+            return
+        command = (
+            f'source {shlex.quote(str(setup_file))} && '
+            'exec ros2 launch generic_motor_driver '
+            'rectangular_classic_nav2_sim.launch.py '
+            'headless:=True use_rviz:=True slam:=True '
+            f'{shlex.quote(f"world:={world_file}")}'
+        )
         self._start_process(
             'simulation',
-            'ros2',
-            [
-                'launch',
-                'create2_demo',
-                'rectangular_robot_demo.launch.py',
-                'headless:=True',
-                'use_rviz:=True',
-                'start_wall_follower:=false',
-                'nav2_body_clearance:='
-                f'{self._configuration_value("robot_clearance")}',
-                *self._slam_launch_arguments(),
-            ],
+            'bash',
+            ['-lc', command],
         )
         if self.gazebo_gui_switch.isChecked():
             QTimer.singleShot(3000, self.open_gazebo)
