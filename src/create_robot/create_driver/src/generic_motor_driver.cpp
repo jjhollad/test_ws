@@ -80,10 +80,10 @@ GenericMotorDriver::GenericMotorDriver()
   invert_right_encoder_ = declare_parameter<bool>("invert_right_encoder", true);
   invert_left_motor_ = declare_parameter<bool>("invert_left_motor", false);
   invert_right_motor_ = declare_parameter<bool>("invert_right_motor", true);
-  swap_motors_ = declare_parameter<bool>("swap_motors", false);
-  linear_command_sign_ = declare_parameter<double>("linear_command_sign", 1.0);
+  swap_motors_ = declare_parameter<bool>("swap_motors", true);
+  linear_command_sign_ = declare_parameter<double>("linear_command_sign", -1.0);
   linear_command_sign_ = (linear_command_sign_ >= 0.0) ? 1.0 : -1.0;
-  linear_odom_sign_ = declare_parameter<double>("linear_odom_sign", 1.0);
+  linear_odom_sign_ = declare_parameter<double>("linear_odom_sign", -1.0);
   linear_odom_sign_ = (linear_odom_sign_ >= 0.0) ? 1.0 : -1.0;
   cmd_vel_filter_alpha_ = declare_parameter<double>("cmd_vel_filter_alpha", 1.0);
   if (cmd_vel_filter_alpha_ < 0.0) {

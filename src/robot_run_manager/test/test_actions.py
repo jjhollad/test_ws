@@ -45,6 +45,13 @@ def test_every_implemented_action_has_a_button():
     assert 'Start Wandering Mapper' not in buttons
     assert 'Stop Wandering Mapper' not in buttons
     assert {'Start Xbox Teleop', 'Stop Xbox Teleop'} <= buttons
+    assert {'Start Wall Follower', 'Stop Wall Follower'} <= buttons
+    assert {
+        'Start Demo Bringup',
+        'Start Demo Loop',
+        'Stop Demo Bringup',
+    } <= buttons
+    assert {'Start Coverage', 'Stop Coverage'} <= buttons
     assert {
         'Start Autonomous Exploration',
         'Pause Exploration',

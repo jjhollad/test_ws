@@ -3,7 +3,7 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, Command
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, Command, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from launch_ros.parameter_descriptions import ParameterValue
@@ -86,10 +86,26 @@ def generate_launch_description():
         ]),
         description='Full path to the Nav2 parameters file'
     )
+
+    ekf_params_file_arg = DeclareLaunchArgument(
+        'ekf_params_file',
+        default_value=PathJoinSubstitution([
+            FindPackageShare('generic_motor_driver'),
+            'config',
+            'ekf_odom_imu.yaml'
+        ]),
+        description='Full path to the robot_localization EKF parameters file'
+    )
+
+    use_ekf_arg = DeclareLaunchArgument(
+        'use_ekf',
+        default_value='false',
+        description='Let robot_localization publish odom->base_footprint instead of raw wheel odom',
+    )
     
     map_file_arg = DeclareLaunchArgument(
         'map',
-        default_value='',
+        default_value='/home/user/maps/EERCsB/FullSBMap.yaml',
         description='Full path to the saved map yaml file to load'
     )
 
@@ -121,13 +137,31 @@ def generate_launch_description():
         parameters=[{
             'base_frame': 'base_footprint',
             'odom_frame': 'odom',
+            # Default to raw wheel odom TF so Nav2 always has odom->base_footprint.
+            # When use_ekf:=true, robot_localization owns that transform instead.
+            'publish_tf': ParameterValue(
+                PythonExpression(["'", LaunchConfiguration('use_ekf'), "' == 'false'"]),
+                value_type=bool,
+            ),
             # Must match URDF joint names so robot_state_publisher can publish wheel TF.
             'joint_names': ['left_rear_wheel_joint', 'right_rear_wheel_joint'],
-            'swap_motors': True,
-            'linear_command_sign': -1.0,
-            'linear_odom_sign': -1.0,
             'use_sim_time': LaunchConfiguration('use_sim_time'),
         }]
+    )
+
+    ekf_node = Node(
+        package='robot_localization',
+        executable='ekf_node',
+        name='ekf_filter_node',
+        output='screen',
+        parameters=[
+            LaunchConfiguration('ekf_params_file'),
+            {'use_sim_time': LaunchConfiguration('use_sim_time')},
+        ],
+        remappings=[
+            ('odometry/filtered', '/odometry/filtered'),
+        ],
+        condition=IfCondition(LaunchConfiguration('use_ekf')),
     )
 
     # Relay controller
@@ -288,12 +322,15 @@ def generate_launch_description():
         lidar_baud_arg,
         lidar_frame_arg,
         nav2_params_file_arg,
+        ekf_params_file_arg,
+        use_ekf_arg,
         map_file_arg,
         
         # Nodes
         robot_state_publisher_node,
         motor_driver_node,
         relay_controller_node,
+        ekf_node,
         joy_node,
         teleop_twist_joy_node,
         twist_mux_node,

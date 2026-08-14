@@ -3,7 +3,7 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition, UnlessCondition
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, Command
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, Command, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from launch_ros.parameter_descriptions import ParameterValue
@@ -93,12 +93,63 @@ def generate_launch_description():
         ]),
         description='Full path to the Nav2 parameters file'
     )
+
+    ekf_params_file_arg = DeclareLaunchArgument(
+        'ekf_params_file',
+        default_value=PathJoinSubstitution([
+            FindPackageShare('generic_motor_driver'),
+            'config',
+            'ekf_odom_imu.yaml'
+        ]),
+        description='Full path to the robot_localization EKF parameters file'
+    )
+
+    use_ekf_arg = DeclareLaunchArgument(
+        'use_ekf',
+        default_value='false',
+        description='Let robot_localization publish odom->base_footprint instead of raw wheel odom',
+    )
     
     use_nav2_arg = DeclareLaunchArgument(
         'use_nav2',
         default_value='true',
         description='Enable Nav2 navigation stack'
     )
+    use_opencv_mapping_driver_arg = DeclareLaunchArgument(
+        'use_opencv_mapping_driver',
+        default_value='false',
+        description='Enable live OpenCV lidar hallway-center driving while SLAM maps',
+    )
+    opencv_mapping_speed_arg = DeclareLaunchArgument(
+        'opencv_mapping_speed',
+        default_value='0.25',
+        description='Forward speed for the live OpenCV hallway mapping driver',
+    )
+    opencv_mapping_crawl_speed_arg = DeclareLaunchArgument(
+        'opencv_mapping_crawl_speed',
+        default_value='0.25',
+        description='Reduced speed when the live OpenCV hallway mapping driver is uncertain',
+    )
+    opencv_mapping_lookahead_arg = DeclareLaunchArgument(
+        'opencv_mapping_lookahead',
+        default_value='1.2',
+        description='Meters ahead used for live hallway center detection',
+    )
+    opencv_mapping_min_wall_points_arg = DeclareLaunchArgument(
+        'opencv_mapping_min_wall_points',
+        default_value='5',
+        description='Minimum lidar points needed to trust a wall fit',
+    )
+    opencv_mapping_search_forward_arg = DeclareLaunchArgument(
+        'opencv_mapping_search_forward',
+        default_value='true',
+        description='Creep forward when the front is clear but hallway walls are not confidently detected',
+    )
+
+    use_twist_mux = PythonExpression([
+        "'", LaunchConfiguration('use_nav2'), "' == 'true' or '",
+        LaunchConfiguration('use_opencv_mapping_driver'), "' == 'true'",
+    ])
 
     # Get URDF file path
     urdf_file = PathJoinSubstitution([
@@ -128,13 +179,31 @@ def generate_launch_description():
         parameters=[{
             'base_frame': 'base_footprint',
             'odom_frame': 'odom',
+            # Default to raw wheel odom TF so SLAM/Nav2 always has odom->base_footprint.
+            # When use_ekf:=true, robot_localization owns that transform instead.
+            'publish_tf': ParameterValue(
+                PythonExpression(["'", LaunchConfiguration('use_ekf'), "' == 'false'"]),
+                value_type=bool,
+            ),
             # Must match URDF joint names so robot_state_publisher can publish wheel TF.
             'joint_names': ['left_rear_wheel_joint', 'right_rear_wheel_joint'],
-            'swap_motors': True,
-            'linear_command_sign': -1.0,
-            'linear_odom_sign': -1.0,
             'use_sim_time': LaunchConfiguration('use_sim_time'),
         }]
+    )
+
+    ekf_node = Node(
+        package='robot_localization',
+        executable='ekf_node',
+        name='ekf_filter_node',
+        output='screen',
+        parameters=[
+            LaunchConfiguration('ekf_params_file'),
+            {'use_sim_time': LaunchConfiguration('use_sim_time')},
+        ],
+        remappings=[
+            ('odometry/filtered', '/odometry/filtered'),
+        ],
+        condition=IfCondition(LaunchConfiguration('use_ekf')),
     )
 
     # Relay controller
@@ -176,7 +245,7 @@ def generate_launch_description():
             ])
         ],
         remappings=[('/cmd_vel', '/cmd_vel_joy')],
-        condition=IfCondition(LaunchConfiguration('use_nav2')),
+        condition=IfCondition(use_twist_mux),
     )
     teleop_twist_joy_direct = Node(
         package='teleop_twist_joy',
@@ -191,7 +260,7 @@ def generate_launch_description():
             ])
         ],
         remappings=[('/cmd_vel', '/cmd_vel')],
-        condition=UnlessCondition(LaunchConfiguration('use_nav2')),
+        condition=UnlessCondition(use_twist_mux),
     )
 
     # Mux: joystick (100) > behaviors (50) > navigation (10) -> /cmd_vel
@@ -214,7 +283,40 @@ def generate_launch_description():
             {'use_sim_time': LaunchConfiguration('use_sim_time')},
         ],
         remappings=[('/cmd_vel_out', '/cmd_vel')],
-        condition=IfCondition(LaunchConfiguration('use_nav2')),
+        condition=IfCondition(use_twist_mux),
+    )
+
+    opencv_mapping_driver_node = Node(
+        package='generic_motor_driver',
+        executable='opencv_hallway_mapping_driver.py',
+        name='opencv_hallway_mapping_driver',
+        output='screen',
+        parameters=[{
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
+            'scan_topic': '/scan',
+            'cmd_topic': '/cmd_vel_opencv_mapping',
+            'linear_speed': ParameterValue(
+                LaunchConfiguration('opencv_mapping_speed'),
+                value_type=float,
+            ),
+            'crawl_speed': ParameterValue(
+                LaunchConfiguration('opencv_mapping_crawl_speed'),
+                value_type=float,
+            ),
+            'lookahead_distance': ParameterValue(
+                LaunchConfiguration('opencv_mapping_lookahead'),
+                value_type=float,
+            ),
+            'min_wall_points': ParameterValue(
+                LaunchConfiguration('opencv_mapping_min_wall_points'),
+                value_type=int,
+            ),
+            'search_forward_when_uncertain': ParameterValue(
+                LaunchConfiguration('opencv_mapping_search_forward'),
+                value_type=bool,
+            ),
+        }],
+        condition=IfCondition(LaunchConfiguration('use_opencv_mapping_driver')),
     )
 
     # Optional relay button mapping node (requires joy_teleop package).
@@ -294,7 +396,8 @@ def generate_launch_description():
         executable='rviz2',
         name='rviz2',
         output='screen',
-        arguments=['-d', LaunchConfiguration('rviz_config')]
+        arguments=['-d', LaunchConfiguration('rviz_config')],
+        condition=IfCondition(LaunchConfiguration('rviz')),
     )
 
     launch_items = [
@@ -310,16 +413,26 @@ def generate_launch_description():
         lidar_frame_arg,
         slam_toolbox_params_arg,
         nav2_params_file_arg,
+        ekf_params_file_arg,
+        use_ekf_arg,
         use_nav2_arg,
+        use_opencv_mapping_driver_arg,
+        opencv_mapping_speed_arg,
+        opencv_mapping_crawl_speed_arg,
+        opencv_mapping_lookahead_arg,
+        opencv_mapping_min_wall_points_arg,
+        opencv_mapping_search_forward_arg,
         
         # Nodes
         robot_state_publisher_node,
         motor_driver_node,
         relay_controller_node,
+        ekf_node,
         joy_node,
         teleop_twist_joy_muxed,
         teleop_twist_joy_direct,
         twist_mux_node,
+        opencv_mapping_driver_node,
         lidar_node,
         slam_toolbox_node,
         nav2_launch,

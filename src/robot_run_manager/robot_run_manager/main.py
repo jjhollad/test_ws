@@ -92,6 +92,9 @@ ACTION_GROUPS = {
         'Clear Exploration E-Stop',
         'Start Wall Follower',
         'Stop Wall Follower',
+        'Start Demo Bringup',
+        'Start Demo Loop',
+        'Stop Demo Bringup',
         'Start Simulation',
         'Stop Simulation',
         'Start Coverage',
@@ -155,6 +158,17 @@ ACTION_TOOLTIPS = {
     ),
     'Stop Wall Follower': (
         'Stop behavior-tree wall exploration and its frontier planner.'
+    ),
+    'Start Demo Bringup': (
+        'Start the real-robot demo stack: robot driver, relay, LiDAR, map, Nav2, '
+        'RViz, Xbox teleop, and twist mux. The loop stays idle until started.'
+    ),
+    'Start Demo Loop': (
+        'After setting the robot pose in RViz, send the FullSB center-loop CSV '
+        'route to Nav2.'
+    ),
+    'Stop Demo Bringup': (
+        'Stop the demo bringup stack, cancel motion, and publish zero velocity.'
     ),
     'Start Simulation': (
         'Start the corridor Gazebo world, rectangular robot, SLAM, Nav2, and RViz.'
@@ -222,6 +236,9 @@ IMPLEMENTED_ACTIONS = {
     'Clear Exploration E-Stop',
     'Start Wall Follower',
     'Stop Wall Follower',
+    'Start Demo Bringup',
+    'Start Demo Loop',
+    'Stop Demo Bringup',
 }
 
 HIDDEN_SUPERVISOR_EXPLORATION_ACTIONS = {
@@ -1009,13 +1026,6 @@ class RunManagerWindow(QMainWindow):
                     button.setVisible(False)
             root_layout.addWidget(group)
 
-        self.buttons['Start Wall Follower'].setText(
-            'Start Behavior-Tree Exploration'
-        )
-        self.buttons['Stop Wall Follower'].setText(
-            'Stop Behavior-Tree Exploration'
-        )
-
         self.output = QPlainTextEdit()
         self.output.setReadOnly(True)
         self.output.setMaximumBlockCount(2000)
@@ -1075,6 +1085,15 @@ class RunManagerWindow(QMainWindow):
         )
         self.buttons['Stop Wall Follower'].clicked.connect(
             self.stop_wall_follower
+        )
+        self.buttons['Start Demo Bringup'].clicked.connect(
+            self.start_demo_bringup
+        )
+        self.buttons['Start Demo Loop'].clicked.connect(
+            self.start_demo_loop
+        )
+        self.buttons['Stop Demo Bringup'].clicked.connect(
+            self.stop_demo_bringup
         )
         self.buttons['Start Simulation'].clicked.connect(self.start_simulation)
         self.buttons['Stop Simulation'].clicked.connect(self.stop_simulation)
@@ -1664,7 +1683,7 @@ class RunManagerWindow(QMainWindow):
 
     def _set_workflow_styles(
         self, real_robot, running, recording, mapping, simulation,
-        replaying, exploring, wall_following,
+        replaying, exploring, wall_following, demo_bringup,
     ):
         """Highlight the next action and make active stop actions conspicuous."""
         green = (
@@ -1711,6 +1730,12 @@ class RunManagerWindow(QMainWindow):
         elif simulation and not wall_following:
             if self.buttons['Start Wall Follower'].isEnabled():
                 self.buttons['Start Wall Follower'].setStyleSheet(green)
+        elif real_robot and not demo_bringup:
+            if self.buttons['Start Demo Bringup'].isEnabled():
+                self.buttons['Start Demo Bringup'].setStyleSheet(green)
+        elif demo_bringup:
+            if self.buttons['Start Demo Loop'].isEnabled():
+                self.buttons['Start Demo Loop'].setStyleSheet(green)
 
         stop_states = {
             'Stop Robot': running,
@@ -1720,6 +1745,7 @@ class RunManagerWindow(QMainWindow):
             'Stop Simulation': simulation or replaying,
             'Stop Autonomous Exploration': exploring,
             'Stop Wall Follower': wall_following,
+            'Stop Demo Bringup': demo_bringup,
         }
         for action, active in stop_states.items():
             if active:
@@ -1779,6 +1805,8 @@ class RunManagerWindow(QMainWindow):
         replaying = self._is_running('replay')
         exploring = self._is_running('autonomous_exploration')
         wall_following = self._is_running('wall_follower')
+        demo_bringup = self._is_running('demo_bringup')
+        demo_loop_start = self._is_running('demo_loop_start')
         xbox_teleop = self._is_running('xbox_teleop')
         gazebo_client = self._is_running('gazebo_client')
         rviz = self._is_running('rviz')
@@ -1865,9 +1893,23 @@ class RunManagerWindow(QMainWindow):
             and not mapping
             and not exploring
             and not wall_following
+            and not demo_bringup
             and not replaying
         )
         self.buttons['Stop Wall Follower'].setEnabled(wall_following)
+        self.buttons['Start Demo Bringup'].setEnabled(
+            self.preflight_passed
+            and real_robot
+            and not running
+            and not mapping
+            and not exploring
+            and not demo_bringup
+            and not replaying
+        )
+        self.buttons['Start Demo Loop'].setEnabled(
+            demo_bringup and not demo_loop_start
+        )
+        self.buttons['Stop Demo Bringup'].setEnabled(demo_bringup)
         self.buttons['Start Simulation'].setEnabled(
             not real_robot
             and self.preflight_passed
@@ -1898,9 +1940,11 @@ class RunManagerWindow(QMainWindow):
         )
         self.buttons['Download Code'].setEnabled(not any([
             running, recording, mapping, simulation, replaying, exploring,
+            demo_bringup,
         ]))
         self.buttons['Upload Code'].setEnabled(not any([
             running, recording, mapping, simulation, replaying, exploring,
+            demo_bringup,
         ]))
         self.buttons['View Logs'].setEnabled(True)
         self.buttons['Flag & Open Logs'].setEnabled(True)
@@ -1922,6 +1966,10 @@ class RunManagerWindow(QMainWindow):
             active.append(f'autonomous exploration ({self.exploration_state})')
         if wall_following:
             active.append('wall follower')
+        if demo_bringup:
+            active.append('demo bringup')
+        if demo_loop_start:
+            active.append('demo loop request')
         if xbox_teleop:
             active.append('Xbox teleop')
         if gazebo_client:
@@ -1934,7 +1982,7 @@ class RunManagerWindow(QMainWindow):
             active.append('transfer')
         self.role_selector.setEnabled(not any([
             running, recording, mapping, simulation, replaying, exploring,
-            wall_following, xbox_teleop,
+            wall_following, demo_bringup, xbox_teleop,
         ]))
         self.process_label.setText(
             f'Managed processes: {", ".join(active)} running' if active
@@ -1942,7 +1990,7 @@ class RunManagerWindow(QMainWindow):
         )
         self._set_workflow_styles(
             real_robot, running, recording, mapping, simulation, replaying,
-            exploring, wall_following,
+            exploring, wall_following, demo_bringup,
         )
 
     def _is_running(self, name):
@@ -2552,6 +2600,91 @@ class RunManagerWindow(QMainWindow):
             self._request_stop('wall_follower')
         self._begin_zero_velocity_burst()
         self.statusBar().showMessage('Stopping wandering mapper')
+
+    def start_demo_bringup(self):
+        if (
+            not self.preflight_passed
+            or not self._is_real_robot_role()
+            or self._is_running('robot')
+            or self._is_running('mapping')
+            or self._is_running('autonomous_exploration')
+            or self._is_running('demo_bringup')
+            or self._is_running('replay')
+        ):
+            return
+        if self.autonomy_workspace is None:
+            QMessageBox.critical(
+                self,
+                'Demo workspace unavailable',
+                'The manager could not find the BigSweep workspace. Set '
+                'BIGSWEEP_WORKSPACE or place it at ~/BigSweepLogic.',
+            )
+            return
+        setup_file = self.autonomy_workspace / 'install' / 'setup.bash'
+        if not setup_file.is_file():
+            QMessageBox.critical(
+                self,
+                'Demo workspace is not built',
+                f'Build {self.autonomy_workspace} before starting the demo.',
+            )
+            return
+        if not Path('/dev/lidar').exists():
+            QMessageBox.critical(
+                self,
+                'LiDAR unavailable',
+                'The demo navigation stack requires /dev/lidar.',
+            )
+            return
+        answer = QMessageBox.warning(
+            self,
+            'Start demo navigation bringup?',
+            'This starts the real robot driver, relay, LiDAR, map server, Nav2, '
+            'RViz, Xbox controller input, and twist mux. The robot should not '
+            'start the loop until you initialize its pose and press Start Demo '
+            'Loop. Keep the physical emergency stop within reach.',
+            QMessageBox.Ok | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if answer != QMessageBox.Ok:
+            return
+        command = (
+            f'source {shlex.quote(str(setup_file))} && '
+            'exec ros2 launch generic_motor_driver cleaning_bringup.launch.py '
+            'start_cleaning:=false publish_initial_pose:=false rviz:=true'
+        )
+        self._start_process('demo_bringup', 'bash', ['-lc', command])
+
+    def start_demo_loop(self):
+        if (
+            not self._is_running('demo_bringup')
+            or self._is_running('demo_loop_start')
+        ):
+            return
+        answer = QMessageBox.warning(
+            self,
+            'Start FullSB demo loop?',
+            'Confirm the robot pose has been initialized in RViz and Nav2 is '
+            'localized. This sends the FullSB center-loop CSV route to Nav2.',
+            QMessageBox.Ok | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if answer != QMessageBox.Ok:
+            return
+        setup_file = self.autonomy_workspace / 'install' / 'setup.bash'
+        command = (
+            f'source {shlex.quote(str(setup_file))} && '
+            'exec ros2 service call /start_coverage_cleaning '
+            'std_srvs/srv/Trigger {}'
+        )
+        self._start_process('demo_loop_start', 'bash', ['-lc', command])
+
+    def stop_demo_bringup(self):
+        if not self._is_running('demo_bringup'):
+            return
+        self._begin_zero_velocity_burst()
+        self._request_stop('demo_loop_start')
+        self._request_stop('demo_bringup')
+        self.statusBar().showMessage('Stopping demo navigation bringup')
 
     def start_wall_follower(self):
         if (

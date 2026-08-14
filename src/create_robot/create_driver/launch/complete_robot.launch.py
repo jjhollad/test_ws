@@ -33,30 +33,6 @@ def generate_launch_description():
         description='Relay status publishing rate (Hz)'
     )
     
-    wheel_base_arg = DeclareLaunchArgument(
-        'wheel_base',
-        default_value='0.3',
-        description='Distance between left and right wheels (meters)'
-    )
-    
-    wheel_radius_arg = DeclareLaunchArgument(
-        'wheel_radius',
-        default_value='0.05',
-        description='Wheel radius (meters)'
-    )
-    
-    motor_gear_ratio_arg = DeclareLaunchArgument(
-        'motor_gear_ratio',
-        default_value='90.0',
-        description='Motor internal gear ratio'
-    )
-    
-    belt_drive_ratio_arg = DeclareLaunchArgument(
-        'belt_drive_ratio',
-        default_value='6.4',
-        description='Belt drive ratio'
-    )
-    
     loop_hz_arg = DeclareLaunchArgument(
         'loop_hz',
         default_value='20.0',
@@ -67,48 +43,6 @@ def generate_launch_description():
         'max_motor_speed',
         default_value='1000.0',
         description='Maximum motor speed'
-    )
-    
-    invert_left_encoder_arg = DeclareLaunchArgument(
-        'invert_left_encoder',
-        default_value='false',
-        description='Invert left encoder direction (fix spinning in circles)'
-    )
-    
-    invert_right_encoder_arg = DeclareLaunchArgument(
-        'invert_right_encoder',
-        default_value='true',
-        description='Invert right encoder direction (fix spinning in circles)'
-    )
-    
-    invert_left_motor_arg = DeclareLaunchArgument(
-        'invert_left_motor',
-        default_value='true',
-        description='Invert left motor direction (fix backwards motors)'
-    )
-    
-    invert_right_motor_arg = DeclareLaunchArgument(
-        'invert_right_motor',
-        default_value='true',
-        description='Invert right motor direction (fix backwards motors)'
-    )
-
-    swap_motors_arg = DeclareLaunchArgument(
-        'swap_motors',
-        default_value='true',
-        description='Swap motor controller channels so M1 is treated as right and M2 as left'
-    )
-
-    linear_command_sign_arg = DeclareLaunchArgument(
-        'linear_command_sign',
-        default_value='-1.0',
-        description='Use -1.0 when positive cmd_vel linear.x drives the robot backward'
-    )
-
-    linear_odom_sign_arg = DeclareLaunchArgument(
-        'linear_odom_sign',
-        default_value='-1.0',
-        description='Use -1.0 when forward robot motion appears backward in odom/RViz'
     )
     
     base_frame_arg = DeclareLaunchArgument(
@@ -168,19 +102,8 @@ def generate_launch_description():
         parameters=[{
             'dev': LaunchConfiguration('dev'),
             'baud': LaunchConfiguration('baud'),
-            'wheel_base': LaunchConfiguration('wheel_base'),
-            'wheel_radius': LaunchConfiguration('wheel_radius'),
-            'motor_gear_ratio': LaunchConfiguration('motor_gear_ratio'),
-            'belt_drive_ratio': LaunchConfiguration('belt_drive_ratio'),
             'loop_hz': LaunchConfiguration('loop_hz'),
             'max_motor_speed': LaunchConfiguration('max_motor_speed'),
-            'invert_left_encoder': LaunchConfiguration('invert_left_encoder'),
-            'invert_right_encoder': LaunchConfiguration('invert_right_encoder'),
-            'invert_left_motor': LaunchConfiguration('invert_left_motor'),
-            'invert_right_motor': LaunchConfiguration('invert_right_motor'),
-            'swap_motors': LaunchConfiguration('swap_motors'),
-            'linear_command_sign': LaunchConfiguration('linear_command_sign'),
-            'linear_odom_sign': LaunchConfiguration('linear_odom_sign'),
             'base_frame': LaunchConfiguration('base_frame'),
             'odom_frame': LaunchConfiguration('odom_frame'),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
@@ -239,19 +162,8 @@ def generate_launch_description():
         baud_arg,
         relay_dev_arg,
         relay_status_rate_arg,
-        wheel_base_arg,
-        wheel_radius_arg,
-        motor_gear_ratio_arg,
-        belt_drive_ratio_arg,
         loop_hz_arg,
         max_motor_speed_arg,
-        invert_left_encoder_arg,
-        invert_right_encoder_arg,
-        invert_left_motor_arg,
-        invert_right_motor_arg,
-        swap_motors_arg,
-        linear_command_sign_arg,
-        linear_odom_sign_arg,
         base_frame_arg,
         odom_frame_arg,
         use_sim_time_arg,

@@ -2,7 +2,8 @@
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, Command
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, Command, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
@@ -34,6 +35,22 @@ def generate_launch_description():
         default_value='/dev/ttyACM0',
         description='Serial device path for relay controller'
     )
+
+    ekf_params_file_arg = DeclareLaunchArgument(
+        'ekf_params_file',
+        default_value=PathJoinSubstitution([
+            FindPackageShare('generic_motor_driver'),
+            'config',
+            'ekf_odom_imu.yaml'
+        ]),
+        description='Full path to the robot_localization EKF parameters file'
+    )
+
+    use_ekf_arg = DeclareLaunchArgument(
+        'use_ekf',
+        default_value='false',
+        description='Let robot_localization publish odom->base_footprint instead of raw wheel odom',
+    )
     
     # Get the URDF file path
     urdf_file = PathJoinSubstitution([
@@ -63,12 +80,30 @@ def generate_launch_description():
         parameters=[{
             'base_frame': 'base_footprint',
             'odom_frame': 'odom',
+            # Default to raw wheel odom TF so basic robot bringup always has odom->base_footprint.
+            # When use_ekf:=true, robot_localization owns that transform instead.
+            'publish_tf': ParameterValue(
+                PythonExpression(["'", LaunchConfiguration('use_ekf'), "' == 'false'"]),
+                value_type=bool,
+            ),
             'joint_names': ['left_rear_wheel_joint', 'right_rear_wheel_joint'],
-            'swap_motors': True,
-            'linear_command_sign': -1.0,
-            'linear_odom_sign': -1.0,
             'use_sim_time': LaunchConfiguration('use_sim_time'),
         }]
+    )
+
+    ekf_node = Node(
+        package='robot_localization',
+        executable='ekf_node',
+        name='ekf_filter_node',
+        output='screen',
+        parameters=[
+            LaunchConfiguration('ekf_params_file'),
+            {'use_sim_time': LaunchConfiguration('use_sim_time')},
+        ],
+        remappings=[
+            ('odometry/filtered', '/odometry/filtered'),
+        ],
+        condition=IfCondition(LaunchConfiguration('use_ekf')),
     )
 
     # Relay controller node
@@ -150,11 +185,14 @@ def generate_launch_description():
         use_sim_time_arg,
         rviz_arg,
         relay_dev_arg,
+        ekf_params_file_arg,
+        use_ekf_arg,
         
         # Nodes
         robot_state_publisher_node,
         motor_driver_node,
         relay_controller_node,
+        ekf_node,
         joy_node,
         teleop_twist_joy_node,
         rviz_node,

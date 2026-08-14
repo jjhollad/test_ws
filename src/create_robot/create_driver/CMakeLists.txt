@@ -37,6 +37,7 @@ ament_target_dependencies(${PROJECT_NAME}
 add_executable(relay_controller src/relay_controller.cpp)
 ament_target_dependencies(relay_controller
   rclcpp
+  sensor_msgs
   std_msgs
 )
 
@@ -49,9 +50,16 @@ install(TARGETS ${PROJECT_NAME} relay_controller
   DESTINATION lib/${PROJECT_NAME}
 )
 
+install(FILES
+  MPU6050_DUE_SETUP.md
+  DESTINATION share/${PROJECT_NAME}
+)
+
 # Install Python scripts
 install(PROGRAMS
   scripts/coverage_cleaner.py
+  scripts/opencv_hallway_mapping_driver.py
+  scripts/opencv_wall_trace_demo.py
   scripts/kill_robot_stack.sh
   scripts/rotate_wheel_one_turn.py
   scripts/test_left_wheel_cmdvel.py

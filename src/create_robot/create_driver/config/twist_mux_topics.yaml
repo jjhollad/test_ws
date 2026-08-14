@@ -17,6 +17,10 @@ twist_mux:
         topic   : cmd_vel_behaviors
         timeout : 0.5
         priority: 50
+      opencv_mapping:
+        topic   : cmd_vel_opencv_mapping
+        timeout : 0.5
+        priority: 20
       navigation:
         topic   : cmd_vel_navigation
         timeout : 0.5

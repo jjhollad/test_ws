@@ -14,6 +14,7 @@ Software License Agreement (BSD)
 #include <atomic>
 
 #include "rclcpp/rclcpp.hpp"
+#include "sensor_msgs/msg/imu.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/u_int8_multi_array.hpp"
 #include "std_msgs/msg/string.hpp"
@@ -42,8 +43,10 @@ private:
   
   rclcpp::Publisher<std_msgs::msg::UInt8MultiArray>::SharedPtr relay_status_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr relay_feedback_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub_;
   
   rclcpp::TimerBase::SharedPtr status_timer_;
+  rclcpp::TimerBase::SharedPtr serial_timer_;
   
   // Messages
   std_msgs::msg::UInt8MultiArray relay_status_msg_;
@@ -51,6 +54,10 @@ private:
   
   // ROS parameters
   double status_publish_rate_;
+  double serial_read_rate_;
+  bool publish_imu_;
+  std::string imu_frame_id_;
+  std::string rx_buffer_;
   
   // Serial communication methods
   bool connectSerial();
@@ -58,6 +65,7 @@ private:
   bool sendCommand(const std::string& command);
   void readSerialData();
   void parseResponse(const std::string& response);
+  void parseImuResponse(const std::string& payload);
   
   // Relay control methods
   void setRelay(int relayNum, bool state);

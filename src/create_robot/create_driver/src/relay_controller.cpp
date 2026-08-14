@@ -11,6 +11,8 @@ Software License Agreement (BSD)
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
+#include <exception>
 #include <fcntl.h>
 #include <termios.h>
 #include <unistd.h>
@@ -21,7 +23,10 @@ RelayController::RelayController()
 : Node("relay_controller"),
   serial_fd_(-1),
   connected_(false),
-  status_publish_rate_(1.0)
+  status_publish_rate_(1.0),
+  serial_read_rate_(100.0),
+  publish_imu_(true),
+  imu_frame_id_("imu_link")
 {
   // Initialize relay states
   for (int i = 0; i < 4; i++) {
@@ -32,6 +37,9 @@ RelayController::RelayController()
   dev_ = declare_parameter<std::string>("dev", "/dev/ttyUSB1");
   baud_ = declare_parameter<int>("baud", 115200);
   status_publish_rate_ = declare_parameter<double>("status_publish_rate", 1.0);
+  serial_read_rate_ = declare_parameter<double>("serial_read_rate", 100.0);
+  publish_imu_ = declare_parameter<bool>("publish_imu", true);
+  imu_frame_id_ = declare_parameter<std::string>("imu_frame_id", "imu_link");
 
   RCLCPP_INFO_STREAM(get_logger(), "[RELAY] Using device: " << dev_ << " at " << baud_ << " baud");
 
@@ -73,11 +81,16 @@ RelayController::RelayController()
   // Setup publishers
   relay_status_pub_ = create_publisher<std_msgs::msg::UInt8MultiArray>("relay_status", 10);
   relay_feedback_pub_ = create_publisher<std_msgs::msg::String>("relay_feedback", 10);
+  imu_pub_ = create_publisher<sensor_msgs::msg::Imu>("imu/data_raw", 50);
 
   // Setup status timer
   const auto timer_period = std::chrono::duration_cast<std::chrono::nanoseconds>(
     std::chrono::duration<double>(1.0 / status_publish_rate_));
   status_timer_ = create_wall_timer(timer_period, std::bind(&RelayController::publishStatus, this));
+
+  const auto serial_timer_period = std::chrono::duration_cast<std::chrono::nanoseconds>(
+    std::chrono::duration<double>(1.0 / serial_read_rate_));
+  serial_timer_ = create_wall_timer(serial_timer_period, std::bind(&RelayController::readSerialData, this));
 
   RCLCPP_INFO(get_logger(), "[RELAY] Ready.");
 }
@@ -140,10 +153,7 @@ bool RelayController::connectSerial()
   
   // Wait for Arduino to initialize
   std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-  
-  // Read initial messages from Arduino
-  readSerialData();
-  
+
   return true;
 }
 
@@ -184,19 +194,22 @@ void RelayController::readSerialData()
     return;
   }
 
-  char buffer[256];
-  std::string data;
+  char buffer[512];
   
   std::lock_guard<std::mutex> lock(serial_mutex_);
-  ssize_t n = read(serial_fd_, buffer, sizeof(buffer) - 1);
-  if (n > 0) {
+  ssize_t n = 0;
+  while ((n = read(serial_fd_, buffer, sizeof(buffer) - 1)) > 0) {
     buffer[n] = '\0';
-    data = std::string(buffer);
-    
-    // Parse responses line by line
-    std::stringstream ss(data);
-    std::string line;
-    while (std::getline(ss, line)) {
+    rx_buffer_ += std::string(buffer);
+
+    size_t newline_pos = std::string::npos;
+    while ((newline_pos = rx_buffer_.find_first_of("\r\n")) != std::string::npos) {
+      std::string line = rx_buffer_.substr(0, newline_pos);
+      rx_buffer_.erase(0, newline_pos + 1);
+      while (!rx_buffer_.empty() && (rx_buffer_.front() == '\r' || rx_buffer_.front() == '\n')) {
+        rx_buffer_.erase(0, 1);
+      }
+
       if (!line.empty()) {
         parseResponse(line);
       }
@@ -206,6 +219,11 @@ void RelayController::readSerialData()
 
 void RelayController::parseResponse(const std::string& response)
 {
+  if (response.rfind("IMU:", 0) == 0) {
+    parseImuResponse(response.substr(4));
+    return;
+  }
+
   RCLCPP_INFO(get_logger(), "[RELAY] Received: %s", response.c_str());
   
   if (response.find("RELAY_CONTROLLER_READY") != std::string::npos) {
@@ -257,6 +275,54 @@ void RelayController::parseResponse(const std::string& response)
   relay_feedback_pub_->publish(feedback_msg_);
 }
 
+void RelayController::parseImuResponse(const std::string& payload)
+{
+  if (!publish_imu_) {
+    return;
+  }
+
+  std::stringstream ss(payload);
+  std::string item;
+  std::vector<double> values;
+  while (std::getline(ss, item, ',')) {
+    try {
+      values.push_back(std::stod(item));
+    } catch (const std::exception& ex) {
+      RCLCPP_WARN(get_logger(), "[RELAY] Bad IMU field '%s': %s", item.c_str(), ex.what());
+      return;
+    }
+  }
+
+  if (values.size() < 6) {
+    RCLCPP_WARN(get_logger(), "[RELAY] Bad IMU payload, expected 6 fields: %s", payload.c_str());
+    return;
+  }
+
+  sensor_msgs::msg::Imu msg;
+  msg.header.stamp = now();
+  msg.header.frame_id = imu_frame_id_;
+
+  // MPU-6050 firmware sends SI units: m/s^2 and rad/s.
+  msg.linear_acceleration.x = values[0];
+  msg.linear_acceleration.y = values[1];
+  msg.linear_acceleration.z = values[2];
+  msg.angular_velocity.x = values[3];
+  msg.angular_velocity.y = values[4];
+  msg.angular_velocity.z = values[5];
+
+  // No absolute orientation is produced by the MPU-6050 firmware.
+  msg.orientation_covariance[0] = -1.0;
+
+  msg.angular_velocity_covariance[0] = 0.02;
+  msg.angular_velocity_covariance[4] = 0.02;
+  msg.angular_velocity_covariance[8] = 0.02;
+  msg.linear_acceleration_covariance[0] = 0.2;
+  msg.linear_acceleration_covariance[4] = 0.2;
+  msg.linear_acceleration_covariance[8] = 0.2;
+
+  imu_pub_->publish(msg);
+}
+
 void RelayController::setRelay(int relayNum, bool state)
 {
   if (relayNum < 1 || relayNum > 4) {
@@ -273,8 +339,6 @@ void RelayController::setRelay(int relayNum, bool state)
 
 void RelayController::publishStatus()
 {
-  readSerialData();
-  
   std::lock_guard<std::mutex> lock(relay_mutex_);
   for (int i = 0; i < 4; i++) {
     relay_status_msg_.data[i] = relay_states_[i] ? 1 : 0;

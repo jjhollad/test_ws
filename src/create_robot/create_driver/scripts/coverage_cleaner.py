@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
 
+import csv
 import math
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path as FilePath
 from typing import List, Optional, Tuple
 
+from action_msgs.msg import GoalStatus
 import rclpy
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import Point, PoseArray, PoseStamped, PoseWithCovarianceStamped
-from nav2_msgs.action import FollowWaypoints
-from nav_msgs.msg import OccupancyGrid, Path
+from nav2_msgs.action import FollowWaypoints, NavigateToPose
+from nav_msgs.msg import OccupancyGrid, Path as NavPath
 from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from std_srvs.srv import Trigger
 from visualization_msgs.msg import Marker, MarkerArray
 
 
@@ -114,12 +118,25 @@ class CoverageCleaner(Node):
         self.declare_parameter('preview_arrow_stride', 10)
         self.declare_parameter('preview_label_stride', 25)
         self.declare_parameter('preview_text_height', 0.35)
+        self.declare_parameter('coverage_csv_path', '')
+        self.declare_parameter('require_coverage_csv', False)
+        self.declare_parameter('graceful_navigation', True)
+        self.declare_parameter('live_costmap_topic', '/global_costmap/costmap')
+        self.declare_parameter('goal_stride', 4)
+        self.declare_parameter('goal_clearance', 0.15)
+        self.declare_parameter('revisit_deferred_goals', True)
 
         self._map: Optional[OccupancyGrid] = None
+        self._costmap: Optional[OccupancyGrid] = None
         self._preview_waypoints: List[PoseStamped] = []
         self._preview_segments: List[List[PoseStamped]] = []
         self._wall_axis_angle: Optional[float] = None
         self._sent_goal = False
+        self._active_waypoints: List[PoseStamped] = []
+        self._deferred_waypoints: List[PoseStamped] = []
+        self._active_goal_index: Optional[int] = None
+        self._sent_graceful_goal = False
+        self._revisiting_deferred = False
         self._initial_pose_publisher = self.create_publisher(
             PoseWithCovarianceStamped,
             '/initialpose',
@@ -130,7 +147,7 @@ class CoverageCleaner(Node):
         map_qos = QoSProfile(depth=1)
         map_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
         map_qos.reliability = ReliabilityPolicy.RELIABLE
-        self._path_publisher = self.create_publisher(Path, 'coverage_path', path_qos)
+        self._path_publisher = self.create_publisher(NavPath, 'coverage_path', path_qos)
         self._marker_publisher = self.create_publisher(Marker, 'coverage_marker', path_qos)
         self._marker_array_publisher = self.create_publisher(
             MarkerArray,
@@ -144,7 +161,19 @@ class CoverageCleaner(Node):
             self._map_callback,
             map_qos,
         )
+        self._costmap_subscription = self.create_subscription(
+            OccupancyGrid,
+            str(self.get_parameter('live_costmap_topic').value),
+            self._costmap_callback,
+            10,
+        )
         self._action_client = ActionClient(self, FollowWaypoints, 'follow_waypoints')
+        self._navigate_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
+        self._start_service = self.create_service(
+            Trigger,
+            'start_coverage_cleaning',
+            self._start_cleaning_service,
+        )
 
         if self.get_parameter('publish_initial_pose').value:
             repeats = int(self.get_parameter('initial_pose_repeats').value)
@@ -159,6 +188,9 @@ class CoverageCleaner(Node):
 
     def _map_callback(self, msg: OccupancyGrid):
         self._map = msg
+
+    def _costmap_callback(self, msg: OccupancyGrid):
+        self._costmap = msg
 
     def _publish_initial_pose(self):
         if self._initial_pose_repeats_left <= 0:
@@ -187,15 +219,45 @@ class CoverageCleaner(Node):
             self.get_logger().info('Coverage cleaner is loaded; auto_start is false.')
             return
 
-        if self._map is None:
+        self._start_cleaning_once()
+
+    def _start_cleaning_service(self, request, response):
+        del request
+
+        if self._sent_graceful_goal or self._active_waypoints:
+            response.success = False
+            response.message = 'Coverage navigation is already active.'
+            return response
+
+        started = self._start_cleaning_once()
+        response.success = started
+        response.message = 'Coverage cleaning started.' if started else 'Coverage cleaning did not start; check logs.'
+        return response
+
+    def _start_cleaning_once(self) -> bool:
+        csv_path = str(self.get_parameter('coverage_csv_path').value).strip()
+        require_csv = bool(self.get_parameter('require_coverage_csv').value)
+        if csv_path:
+            loaded = self._load_csv_waypoints(FilePath(csv_path))
+            if loaded is None:
+                return False
+            waypoints, segments = loaded
+            self._preview_segments = segments
+        elif require_csv:
+            self.get_logger().error(
+                'coverage_csv_path is required for this launch. Refusing to fall back to '
+                'legacy OccupancyGrid coverage generation.'
+            )
+            return False
+        elif self._map is None:
             self.get_logger().warn('Waiting for /map before generating cleaning waypoints.')
             self._start_timer = self.create_timer(1.0, self._maybe_start_cleaning)
-            return
-
-        waypoints = self._generate_waypoints(self._map)
-        if not waypoints:
-            self.get_logger().error('No cleaning waypoints were generated from the map.')
-            return
+            return False
+        else:
+            waypoints = self._generate_waypoints(self._map)
+            if not waypoints:
+                self.get_logger().error('No cleaning waypoints were generated from the map.')
+                return False
 
         self._publish_path_preview(waypoints)
 
@@ -207,7 +269,7 @@ class CoverageCleaner(Node):
             if republish_period > 0.0:
                 self._preview_waypoints = waypoints
                 self.create_timer(republish_period, self._republish_preview)
-            return
+            return True
 
         max_waypoints = int(self.get_parameter('max_waypoints').value)
         if max_waypoints > 0 and len(waypoints) > max_waypoints:
@@ -216,9 +278,13 @@ class CoverageCleaner(Node):
             )
             waypoints = waypoints[:max_waypoints]
 
+        if bool(self.get_parameter('graceful_navigation').value):
+            self._start_graceful_navigation(waypoints)
+            return True
+
         if not self._action_client.wait_for_server(timeout_sec=10.0):
             self.get_logger().error('Nav2 follow_waypoints action server is not available.')
-            return
+            return False
 
         goal = FollowWaypoints.Goal()
         goal.poses = waypoints
@@ -228,13 +294,161 @@ class CoverageCleaner(Node):
             feedback_callback=self._feedback_callback,
         )
         send_future.add_done_callback(self._goal_response_callback)
+        return True
+
+    def _load_csv_waypoints(
+        self,
+        csv_path: FilePath,
+    ) -> Optional[Tuple[List[PoseStamped], List[List[PoseStamped]]]]:
+        if not csv_path.exists():
+            self.get_logger().error(f'Coverage CSV does not exist: {csv_path}')
+            return None
+
+        segments: List[List[PoseStamped]] = []
+        current_segment: List[PoseStamped] = []
+        current_segment_id: Optional[int] = None
+
+        with csv_path.open('r', newline='', encoding='utf-8') as stream:
+            reader = csv.DictReader(stream)
+            for row in reader:
+                try:
+                    segment_id = int(row['segment'])
+                    x = float(row['x'])
+                    y = float(row['y'])
+                    yaw = float(row['yaw'])
+                except (KeyError, TypeError, ValueError) as error:
+                    self.get_logger().error(f'Invalid coverage CSV row in {csv_path}: {error}')
+                    return None
+
+                if current_segment_id is None:
+                    current_segment_id = segment_id
+                elif segment_id != current_segment_id:
+                    if current_segment:
+                        segments.append(current_segment)
+                    current_segment = []
+                    current_segment_id = segment_id
+
+                current_segment.append(self._pose(x, y, yaw))
+
+        if current_segment:
+            segments.append(current_segment)
+
+        waypoints = [waypoint for segment in segments for waypoint in segment]
+        if not waypoints:
+            self.get_logger().error(f'Coverage CSV had no waypoints: {csv_path}')
+            return None
+
+        self.get_logger().info(
+            f'Loaded {len(waypoints)} waypoints in {len(segments)} segments from {csv_path}.'
+        )
+        return waypoints, segments
+
+    def _start_graceful_navigation(self, waypoints: List[PoseStamped]):
+        if not self._navigate_client.wait_for_server(timeout_sec=10.0):
+            self.get_logger().error('Nav2 navigate_to_pose action server is not available.')
+            return
+
+        self._active_waypoints = list(waypoints)
+        self._deferred_waypoints = []
+        self._active_goal_index = None
+        self._sent_graceful_goal = False
+        self._revisiting_deferred = False
+        self.get_logger().info(
+            f'Starting graceful coverage navigation with {len(self._active_waypoints)} suggested poses.'
+        )
+        self._send_next_graceful_goal()
+
+    def _send_next_graceful_goal(self):
+        if self._sent_graceful_goal:
+            return
+
+        goal_stride = max(1, int(self.get_parameter('goal_stride').value))
+        skipped_count = 0
+        while self._active_waypoints:
+            target_index = min(goal_stride - 1, len(self._active_waypoints) - 1)
+            target = self._active_waypoints[target_index]
+            skipped_count += target_index
+            self._active_waypoints = self._active_waypoints[target_index + 1:]
+
+            if not self._is_waypoint_currently_clear(target):
+                self._deferred_waypoints.append(target)
+                self.get_logger().warn(
+                    'Skipping blocked coverage target and continuing with the next suggestion.'
+                )
+                continue
+
+            goal = NavigateToPose.Goal()
+            goal.pose = target
+            self._sent_graceful_goal = True
+            self.get_logger().info(
+                f'Sending coverage target after advancing {skipped_count + 1} suggested poses '
+                f'(goal_stride={goal_stride}).'
+            )
+            send_future = self._navigate_client.send_goal_async(goal)
+            send_future.add_done_callback(self._graceful_goal_response_callback)
+            return
+
+        if (
+            bool(self.get_parameter('revisit_deferred_goals').value)
+            and self._deferred_waypoints
+            and not self._revisiting_deferred
+        ):
+            self._active_waypoints = self._deferred_waypoints
+            self._deferred_waypoints = []
+            self._revisiting_deferred = True
+            self.get_logger().info(
+                f'Revisiting {len(self._active_waypoints)} deferred coverage targets once.'
+            )
+            self._send_next_graceful_goal()
+            return
+
+        if self._deferred_waypoints:
+            self.get_logger().warn(
+                f'Graceful coverage complete with {len(self._deferred_waypoints)} deferred targets.'
+            )
+        else:
+            self.get_logger().info('Graceful coverage route completed.')
+
+    def _graceful_goal_response_callback(self, future):
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.get_logger().warn('Coverage target was rejected; moving on gracefully.')
+            self._sent_graceful_goal = False
+            self._send_next_graceful_goal()
+            return
+
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(self._graceful_result_callback)
+
+    def _graceful_result_callback(self, future):
+        result = future.result()
+        if result.status == GoalStatus.STATUS_SUCCEEDED:
+            self.get_logger().info('Reached coverage target; selecting the next suggestion.')
+        else:
+            self.get_logger().warn(
+                f'Coverage target ended with Nav2 status {result.status}; skipping ahead.'
+            )
+
+        self._sent_graceful_goal = False
+        self._send_next_graceful_goal()
+
+    def _is_waypoint_currently_clear(self, waypoint: PoseStamped) -> bool:
+        grid = self._costmap if self._costmap is not None else self._map
+        if grid is None:
+            return True
+
+        x = waypoint.pose.position.x
+        y = waypoint.pose.position.y
+        col, row = self._world_to_cell(grid, x, y)
+        clearance = float(self.get_parameter('goal_clearance').value)
+        return self._is_clear_cell_with_clearance(grid, col, row, clearance)
 
     def _republish_preview(self):
         if self._preview_waypoints:
             self._publish_path_preview(self._preview_waypoints)
 
     def _publish_path_preview(self, waypoints: List[PoseStamped]):
-        path = Path()
+        path = NavPath()
         path.header.stamp = self.get_clock().now().to_msg()
         path.header.frame_id = self.get_parameter('map_frame').value
         path.poses = waypoints
@@ -1661,10 +1875,21 @@ class CoverageCleaner(Node):
         return self._is_clear_cell(grid, col, row)
 
     def _is_clear_cell(self, grid: OccupancyGrid, col: int, row: int) -> bool:
-        clearance_cells = max(
-            0,
-            round(float(self.get_parameter('wall_clearance').value) / grid.info.resolution),
+        return self._is_clear_cell_with_clearance(
+            grid,
+            col,
+            row,
+            float(self.get_parameter('wall_clearance').value),
         )
+
+    def _is_clear_cell_with_clearance(
+        self,
+        grid: OccupancyGrid,
+        col: int,
+        row: int,
+        clearance_m: float,
+    ) -> bool:
+        clearance_cells = max(0, round(clearance_m / grid.info.resolution))
         occupied_threshold = int(self.get_parameter('occupied_threshold').value)
         unknown_is_obstacle = bool(self.get_parameter('unknown_is_obstacle').value)
 
