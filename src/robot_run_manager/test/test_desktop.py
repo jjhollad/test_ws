@@ -28,4 +28,7 @@ def test_launcher_sources_workspace():
     assert 'source /opt/ros/humble/setup.bash' in wrapper
     assert 'colcon build --symlink-install --base-paths src' in wrapper
     assert '/tmp/example workspace/install/setup.bash' in wrapper
+    assert 'FASTDDS_DEFAULT_PROFILES_FILE=' in wrapper
+    assert 'FASTRTPS_DEFAULT_PROFILES_FILE=' in wrapper
+    assert 'fastdds_udp_only.xml' in wrapper
     assert 'ros2 run robot_run_manager run_manager_gui' in wrapper

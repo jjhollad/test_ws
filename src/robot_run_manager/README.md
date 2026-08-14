@@ -56,6 +56,8 @@ robot when replaying.
   be reset without disturbing tuning values in the other sections;
 - a persistent **Show Gazebo GUI** switch runs the simulation headless when
   unchecked, reducing graphics load while keeping Gazebo physics active;
+- a persistent **Show RViz GUI** switch starts or closes RViz independently
+  while leaving Gazebo, Nav2, and the rest of the simulation running;
 - a persistent Gazebo GUI FPS selector limits client rendering to
   10/15/20/30/60 FPS without changing simulation or sensor timing;
 - **Rebuild & Restart Manager** safely saves settings, rebuilds the complete

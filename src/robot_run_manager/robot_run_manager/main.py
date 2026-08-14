@@ -34,6 +34,7 @@ from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QDoubleSpinBox,
     QFileDialog,
     QGridLayout,
     QGroupBox,
@@ -93,6 +94,8 @@ ACTION_GROUPS = {
         'Stop Wall Follower',
         'Start Simulation',
         'Stop Simulation',
+        'Start Coverage',
+        'Stop Coverage',
         'Replay Selected Run',
     ],
     'Data and code': [
@@ -157,6 +160,11 @@ ACTION_TOOLTIPS = {
         'Start the corridor Gazebo world, rectangular robot, SLAM, Nav2, and RViz.'
     ),
     'Stop Simulation': 'Stop simulation, Gazebo window, replay, and autonomous behaviors.',
+    'Start Coverage': (
+        'Plan the configured field with OpenNav Coverage and execute its path '
+        'through the existing Nav2 controller.'
+    ),
+    'Stop Coverage': 'Cancel coverage motion and publish zero velocity.',
     'Replay Selected Run': 'Replay a selected rosbag on the isolated development ROS graph.',
     'Validate Selected Run': 'Validate files and create a summary, dataset split, and checksums.',
     'Transfer Run': 'Upload or download a run using resumable SSH/rsync transfer.',
@@ -195,6 +203,8 @@ IMPLEMENTED_ACTIONS = {
     'Save Map',
     'Start Simulation',
     'Stop Simulation',
+    'Start Coverage',
+    'Stop Coverage',
     'Replay Selected Run',
     'Validate Selected Run',
     'Transfer Run',
@@ -698,6 +708,44 @@ SIMULATION_WORLDS = {
     'Corridor building': 'square_building_10ft_hallway.world',
 }
 
+REQUIRED_ROS_DISTRO = 'humble'
+REQUIRED_SIMULATION_PACKAGES = (
+    'gazebo_ros',
+    'joint_state_publisher',
+    'nav2_bringup',
+    'rplidar_ros',
+    'rviz2',
+    'slam_toolbox',
+    'twist_mux',
+)
+QXL_ERROR_PATTERNS = (
+    'execbuffer failed',
+    'failed to allocate gem object',
+    'qxl_alloc_ioctl: failed',
+    'qxl_process_single_command',
+)
+MINIMUM_QXL_VRAM_MIB = 64
+
+
+def qxl_errors_from_journal(text):
+    """Return QXL graphics failures found in kernel or Xorg journal text."""
+    return sorted({
+        line.strip()
+        for line in text.splitlines()
+        if 'qxl' in line.lower()
+        and any(pattern in line.lower() for pattern in QXL_ERROR_PATTERNS)
+    })
+
+
+def qxl_vram_mib_from_journal(text):
+    """Extract the most recent QXL VRAM size reported by the kernel."""
+    matches = re.findall(
+        r'qxl:\s+(\d+)\s*M(?:iB)?\s+of VRAM memory size',
+        text,
+        flags=re.IGNORECASE,
+    )
+    return int(matches[-1]) if matches else None
+
 
 def find_workspace():
     """Find the source workspace without assuming the same home directory."""
@@ -753,6 +801,7 @@ class RunManagerWindow(QMainWindow):
         self._apply_settings_migrations()
         self.config_sliders = {}
         self.config_value_labels = {}
+        self.coverage_inputs = {}
         self.wall_behavior_state = 'inactive'
         self.coordination_state = 'FRONTIER_NAVIGATION'
         self.exploration_state = 'STOPPED'
@@ -839,7 +888,17 @@ class RunManagerWindow(QMainWindow):
         )
         self.gazebo_gui_switch.toggled.connect(self._gazebo_gui_changed)
         role_layout.addWidget(self.gazebo_gui_switch, 0, 2)
-        role_layout.addWidget(QLabel('Gazebo FPS:'), 0, 3)
+        self.rviz_gui_switch = QCheckBox('Show RViz GUI')
+        self.rviz_gui_switch.setToolTip(
+            'Checked: open RViz with the simulation. Unchecked: keep the '
+            'simulation running without the RViz visualization window.'
+        )
+        self.rviz_gui_switch.setChecked(
+            self.settings.value('simulation/show_rviz_gui', True, type=bool)
+        )
+        self.rviz_gui_switch.toggled.connect(self._rviz_gui_changed)
+        role_layout.addWidget(self.rviz_gui_switch, 0, 3)
+        role_layout.addWidget(QLabel('Gazebo FPS:'), 0, 4)
         self.gazebo_fps_selector = QComboBox()
         self.gazebo_fps_selector.addItems(['10', '15', '20', '30', '60'])
         saved_fps = str(
@@ -855,9 +914,9 @@ class RunManagerWindow(QMainWindow):
         self.gazebo_fps_selector.currentTextChanged.connect(
             self._gazebo_fps_changed
         )
-        role_layout.addWidget(self.gazebo_fps_selector, 0, 4)
+        role_layout.addWidget(self.gazebo_fps_selector, 0, 5)
         self.process_label = QLabel('Managed processes: none')
-        role_layout.addWidget(self.process_label, 0, 5)
+        role_layout.addWidget(self.process_label, 0, 6)
         role_layout.addWidget(QLabel('Simulation world:'), 1, 0)
         self.world_selector = QComboBox()
         self.world_selector.addItems(SIMULATION_WORLDS.keys())
@@ -874,7 +933,7 @@ class RunManagerWindow(QMainWindow):
             lambda value: self.settings.setValue('simulation/world', value)
         )
         role_layout.addWidget(self.world_selector, 1, 1, 1, 2)
-        role_layout.setColumnStretch(5, 1)
+        role_layout.setColumnStretch(6, 1)
         root_layout.addLayout(role_layout)
 
         run_layout = QGridLayout()
@@ -1019,6 +1078,8 @@ class RunManagerWindow(QMainWindow):
         )
         self.buttons['Start Simulation'].clicked.connect(self.start_simulation)
         self.buttons['Stop Simulation'].clicked.connect(self.stop_simulation)
+        self.buttons['Start Coverage'].clicked.connect(self.start_coverage)
+        self.buttons['Stop Coverage'].clicked.connect(self.stop_coverage)
         self.buttons['Replay Selected Run'].clicked.connect(self.toggle_replay)
         self.buttons['Validate Selected Run'].clicked.connect(self.validate_run)
         self.buttons['Transfer Run'].clicked.connect(self.transfer_run)
@@ -1034,6 +1095,7 @@ class RunManagerWindow(QMainWindow):
         )
 
         tabs.addTab(self._build_configuration_tab(), 'Configuration')
+        tabs.addTab(self._build_coverage_tab(), 'Coverage')
         tabs.addTab(self._build_behavior_tree_tab(), 'Behavior Tree')
         self.setCentralWidget(tabs)
         status = QStatusBar()
@@ -1107,6 +1169,178 @@ class RunManagerWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setWidget(page)
         return scroll
+
+    def _build_coverage_tab(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        introduction = QLabel(
+            'OpenNav Coverage plans parallel sweeping passes inside the field '
+            'rectangle below. Physical values apply when simulation starts; '
+            'route choices apply each time coverage starts.'
+        )
+        introduction.setWordWrap(True)
+        layout.addWidget(introduction)
+
+        physical_box = QGroupBox('Rectangular robot')
+        physical_layout = QGridLayout(physical_box)
+        physical_specs = {
+            'robot_width': (
+                'Robot width', 0.20, 2.00, 0.735, 3,
+                'Full 0.735 m Nav2 footprint width, including the sweep envelope.',
+            ),
+            'operation_width': (
+                'Sweep width', 0.05, 1.50, 0.520, 3,
+                '0.570 m rear wheel-center spacing minus 0.050 m overlap.',
+            ),
+            'turning_radius': (
+                'Turning radius', 0.05, 3.00, 0.500, 3,
+                'Smallest smooth forward coverage turn. The robot can pivot, '
+                'but smooth turns reduce caster scrub and missed coverage.',
+            ),
+        }
+        for row, (key, spec) in enumerate(physical_specs.items()):
+            label, minimum, maximum, default, decimals, explanation = spec
+            control = QDoubleSpinBox()
+            control.setRange(minimum, maximum)
+            control.setDecimals(decimals)
+            control.setSingleStep(0.01)
+            control.setSuffix(' m')
+            control.setValue(
+                min(maximum, max(minimum, self.settings.value(
+                    f'coverage/{key}', default, type=float
+                )))
+            )
+            control.valueChanged.connect(
+                lambda value, setting=key:
+                self.settings.setValue(f'coverage/{setting}', value)
+            )
+            description = QLabel(explanation)
+            description.setWordWrap(True)
+            description.setStyleSheet('color: #555;')
+            physical_layout.addWidget(QLabel(label), row * 2, 0)
+            physical_layout.addWidget(control, row * 2, 1)
+            physical_layout.addWidget(description, row * 2 + 1, 0, 1, 2)
+            self.coverage_inputs[key] = control
+        layout.addWidget(physical_box)
+
+        route_box = QGroupBox('Coverage strategy')
+        route_layout = QGridLayout(route_box)
+        selectors = {
+            'route_type': (
+                'Route',
+                ['BOUSTROPHEDON', 'SNAKE', 'SPIRAL', 'CUSTOM'],
+                'BOUSTROPHEDON',
+                'BOUSTROPHEDON: alternating lawnmower passes; SNAKE: sequential '
+                'winding swaths; SPIRAL: progressively inward/outward passes; '
+                'CUSTOM: manually specified swath order.',
+            ),
+            'continuity_type': (
+                'Continuity',
+                ['CONTINUOUS', 'DISCONTINUOUS'],
+                'CONTINUOUS',
+                'CONTINUOUS joins passes with drivable curves. DISCONTINUOUS '
+                'returns separate segments without connecting turns.',
+            ),
+            'path_type': (
+                'Path',
+                ['DUBIN', 'REEDS_SHEPP'],
+                'DUBIN',
+                'DUBIN uses forward-only curves. REEDS_SHEPP may use forward '
+                'and reverse motion.',
+            ),
+        }
+        for row, (key, spec) in enumerate(selectors.items()):
+            label, options, default, explanation = spec
+            selector = QComboBox()
+            selector.addItems(options)
+            stored = self.settings.value(
+                f'coverage/{key}', default, type=str
+            )
+            selector.setCurrentText(stored if stored in options else default)
+            selector.currentTextChanged.connect(
+                lambda value, setting=key:
+                self.settings.setValue(f'coverage/{setting}', value)
+            )
+            description = QLabel(explanation)
+            description.setWordWrap(True)
+            description.setStyleSheet('color: #555;')
+            route_layout.addWidget(QLabel(label), row * 2, 0)
+            route_layout.addWidget(selector, row * 2, 1)
+            route_layout.addWidget(description, row * 2 + 1, 0, 1, 2)
+            self.coverage_inputs[key] = selector
+        layout.addWidget(route_box)
+
+        field_box = QGroupBox('Field rectangle in map coordinates')
+        field_layout = QGridLayout(field_box)
+        field_specs = {
+            'field_x_min': ('Minimum X', -100.0, 100.0, 5.0),
+            'field_x_max': ('Maximum X', -100.0, 100.0, 15.0),
+            'field_y_min': ('Minimum Y', -100.0, 100.0, -5.0),
+            'field_y_max': ('Maximum Y', -100.0, 100.0, 5.0),
+        }
+        for row, (key, spec) in enumerate(field_specs.items()):
+            label, minimum, maximum, default = spec
+            control = QDoubleSpinBox()
+            control.setRange(minimum, maximum)
+            control.setDecimals(2)
+            control.setSingleStep(0.25)
+            control.setSuffix(' m')
+            control.setValue(
+                min(maximum, max(minimum, self.settings.value(
+                    f'coverage/{key}', default, type=float
+                )))
+            )
+            control.valueChanged.connect(
+                lambda value, setting=key:
+                self.settings.setValue(f'coverage/{setting}', value)
+            )
+            field_layout.addWidget(QLabel(label), row, 0)
+            field_layout.addWidget(control, row, 1)
+            self.coverage_inputs[key] = control
+        field_note = QLabel(
+            'The polygon must describe clear drivable floor. OpenNav Coverage '
+            'does not infer the field boundary from the occupancy map.'
+        )
+        field_note.setWordWrap(True)
+        field_note.setStyleSheet('color: #555;')
+        field_layout.addWidget(field_note, len(field_specs), 0, 1, 2)
+        layout.addWidget(field_box)
+
+        reset = QPushButton('Reset rectangular coverage defaults')
+        reset.clicked.connect(self._reset_coverage_defaults)
+        layout.addWidget(reset)
+        layout.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(page)
+        return scroll
+
+    def _reset_coverage_defaults(self):
+        defaults = {
+            'robot_width': 0.735,
+            'operation_width': 0.520,
+            'turning_radius': 0.500,
+            'route_type': 'BOUSTROPHEDON',
+            'continuity_type': 'CONTINUOUS',
+            'path_type': 'DUBIN',
+            'field_x_min': 5.0,
+            'field_x_max': 15.0,
+            'field_y_min': -5.0,
+            'field_y_max': 5.0,
+        }
+        for key, value in defaults.items():
+            control = self.coverage_inputs[key]
+            if isinstance(control, QComboBox):
+                control.setCurrentText(value)
+            else:
+                control.setValue(value)
+        self.statusBar().showMessage('Restored rectangular coverage defaults')
+
+    def _coverage_value(self, key):
+        control = self.coverage_inputs[key]
+        if isinstance(control, QComboBox):
+            return control.currentText()
+        return control.value()
 
     def _build_behavior_tree_tab(self):
         page = QWidget()
@@ -1336,11 +1570,18 @@ class RunManagerWindow(QMainWindow):
             'simulation/show_gazebo_gui', self.gazebo_gui_switch.isChecked()
         )
         self.settings.setValue(
+            'simulation/show_rviz_gui', self.rviz_gui_switch.isChecked()
+        )
+        self.settings.setValue(
             'simulation/gazebo_gui_fps', self.gazebo_fps_selector.currentText()
         )
         self.settings.setValue(
             'simulation/world', self.world_selector.currentText()
         )
+        for key in self.coverage_inputs:
+            self.settings.setValue(
+                f'coverage/{key}', self._coverage_value(key)
+            )
         self.settings.sync()
         if self.settings.status() != QSettings.NoError:
             self.output.appendPlainText(
@@ -1515,6 +1756,20 @@ class RunManagerWindow(QMainWindow):
                 f'Restarting Gazebo GUI with a {fps} FPS limit'
             )
 
+    def _rviz_gui_changed(self, show_gui):
+        """Persist and apply the RViz window preference."""
+        self.settings.setValue('simulation/show_rviz_gui', show_gui)
+        self.settings.sync()
+        if self._is_running('simulation'):
+            if show_gui:
+                self.open_rviz()
+            else:
+                self._request_stop('rviz')
+                self.statusBar().showMessage(
+                    'RViz GUI closed; simulation continues without it'
+                )
+        self._update_controls()
+
     def _update_controls(self):
         running = self._is_running('robot')
         recording = self._is_running('recording')
@@ -1526,6 +1781,7 @@ class RunManagerWindow(QMainWindow):
         wall_following = self._is_running('wall_follower')
         xbox_teleop = self._is_running('xbox_teleop')
         gazebo_client = self._is_running('gazebo_client')
+        rviz = self._is_running('rviz')
         validating = self._is_running('validation')
         transferring = self._is_running('transfer')
         machine_selected = self._machine_selected()
@@ -1554,6 +1810,10 @@ class RunManagerWindow(QMainWindow):
             simulation
             and self.gazebo_gui_switch.isChecked()
             and not gazebo_client
+        )
+        self.buttons['Open RViz'].setEnabled(
+            not rviz
+            and (not simulation or self.rviz_gui_switch.isChecked())
         )
         self.buttons['Start Recording'].setEnabled(
             self.preflight_passed and not recording
@@ -1666,6 +1926,8 @@ class RunManagerWindow(QMainWindow):
             active.append('Xbox teleop')
         if gazebo_client:
             active.append('Gazebo window')
+        if rviz:
+            active.append('RViz window')
         if validating:
             active.append('validation')
         if transferring:
@@ -1700,13 +1962,63 @@ class RunManagerWindow(QMainWindow):
         except (OSError, subprocess.TimeoutExpired):
             return False
 
+    def _journal_output(self):
+        try:
+            result = subprocess.run(
+                ['journalctl', '-b', '--no-pager'],
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=10,
+            )
+            return result.stdout if result.returncode == 0 else ''
+        except (OSError, subprocess.TimeoutExpired):
+            return ''
+
+    def _check_opengl(self):
+        glxinfo = shutil.which('glxinfo')
+        if glxinfo is None:
+            return False, 'glxinfo unavailable; install mesa-utils'
+        try:
+            result = subprocess.run(
+                [glxinfo, '-B'],
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            return False, f'probe failed: {error}'
+        output = f'{result.stdout}\n{result.stderr}'
+        renderer = re.search(r'OpenGL renderer string:\s*(.+)', output)
+        version = re.search(r'OpenGL version string:\s*(.+)', output)
+        rendered = result.returncode == 0 and renderer is not None
+        details = []
+        if renderer:
+            details.append(f'renderer={renderer.group(1).strip()}')
+        if version:
+            details.append(f'version={version.group(1).strip()}')
+        if not details:
+            details.append(
+                output.strip().splitlines()[-1]
+                if output.strip()
+                else 'no output'
+            )
+        return rendered, '; '.join(details)
+
     def run_preflight(self):
         if not self._machine_selected():
             self.statusBar().showMessage('Select this machine before preflight')
             return
         real_robot = self._is_real_robot_role()
+        ros_distro = os.environ.get('ROS_DISTRO', '')
         checks = [
             ('ROS 2 command', shutil.which('ros2') is not None, True),
+            (
+                f'ROS distribution ({REQUIRED_ROS_DISTRO})',
+                ros_distro == REQUIRED_ROS_DISTRO,
+                True,
+            ),
             ('Workspace', self.workspace.is_dir(), True),
             (
                 'robot_run_manager package',
@@ -1740,8 +2052,14 @@ class RunManagerWindow(QMainWindow):
             ])
         else:
             checks.extend([
-                ('Gazebo package', self._check_ros_package('gazebo_ros'), True),
-                ('Nav2 package', self._check_ros_package('nav2_bringup'), True),
+                *[
+                    (
+                        f'ROS package {package}',
+                        self._check_ros_package(package),
+                        True,
+                    )
+                    for package in REQUIRED_SIMULATION_PACKAGES
+                ],
                 (
                     'BigSweep simulation overlay',
                     self.autonomy_workspace is not None
@@ -1751,6 +2069,41 @@ class RunManagerWindow(QMainWindow):
                     True,
                 ),
             ])
+            journal = self._journal_output()
+            qxl_errors = qxl_errors_from_journal(journal)
+            qxl_vram_mib = qxl_vram_mib_from_journal(journal)
+            qxl_in_use = 'qxl' in journal.lower()
+            checks.append((
+                'Current-boot QXL health'
+                + (f' ({len(qxl_errors)} errors)' if qxl_errors else ''),
+                not qxl_errors,
+                False,
+            ))
+            if qxl_in_use:
+                checks.append((
+                    'QXL graphics memory'
+                    + (
+                        f' ({qxl_vram_mib} MiB; '
+                        f'{MINIMUM_QXL_VRAM_MIB} MiB recommended)'
+                        if qxl_vram_mib is not None
+                        else ' (unable to determine)'
+                    ),
+                    qxl_vram_mib is not None
+                    and qxl_vram_mib >= MINIMUM_QXL_VRAM_MIB,
+                    False,
+                ))
+            else:
+                checks.append((
+                    'Graphics adapter is not QXL',
+                    True,
+                    True,
+                ))
+            opengl_ok, opengl_detail = self._check_opengl()
+            checks.append((
+                f'OpenGL rendering ({opengl_detail})',
+                opengl_ok,
+                True,
+            ))
 
         self.output.appendPlainText('\nPRE-FLIGHT CHECK')
         required_ok = True
@@ -2336,8 +2689,11 @@ class RunManagerWindow(QMainWindow):
             f'source {shlex.quote(str(setup_file))} && '
             'exec ros2 launch generic_motor_driver '
             'rectangular_classic_nav2_sim.launch.py '
-            'headless:=True use_rviz:=True slam:=True '
-            f'{shlex.quote(f"world:={world_file}")}'
+            'headless:=True use_rviz:=False slam:=True '
+            f'{shlex.quote(f"world:={world_file}")} '
+            f'coverage_robot_width:={self._coverage_value("robot_width")} '
+            f'coverage_operation_width:={self._coverage_value("operation_width")} '
+            f'coverage_turning_radius:={self._coverage_value("turning_radius")}'
         )
         self._start_process(
             'simulation',
@@ -2346,16 +2702,64 @@ class RunManagerWindow(QMainWindow):
         )
         if self.gazebo_gui_switch.isChecked():
             QTimer.singleShot(3000, self.open_gazebo)
+        if self.rviz_gui_switch.isChecked():
+            QTimer.singleShot(3000, self.open_rviz)
 
     def stop_simulation(self):
+        self.stop_coverage()
         if self._is_running('autonomous_exploration'):
             self.stop_autonomous_exploration()
         self.stop_wandering_mapper()
         self.stop_wall_follower()
         self._request_stop('replay')
         self._request_stop('gazebo_client')
+        self._request_stop('rviz')
         self._request_stop('simulation')
         self.statusBar().showMessage('Stopping simulation and replay')
+
+    def start_coverage(self):
+        if not self._is_running('simulation') or self._is_running('coverage'):
+            return
+        x_min = self._coverage_value('field_x_min')
+        x_max = self._coverage_value('field_x_max')
+        y_min = self._coverage_value('field_y_min')
+        y_max = self._coverage_value('field_y_max')
+        if x_min >= x_max or y_min >= y_max:
+            QMessageBox.warning(
+                self,
+                'Invalid coverage field',
+                'Each field minimum must be smaller than its maximum.',
+            )
+            return
+        setup_file = self.autonomy_workspace / 'install' / 'setup.bash'
+        parameters = {
+            'field_x_min': x_min,
+            'field_x_max': x_max,
+            'field_y_min': y_min,
+            'field_y_max': y_max,
+            'route_type': self._coverage_value('route_type'),
+            'continuity_type': self._coverage_value('continuity_type'),
+            'path_type': self._coverage_value('path_type'),
+        }
+        ros_arguments = ' '.join(
+            f'-p {shlex.quote(f"{key}:={value}")}'
+            for key, value in parameters.items()
+        )
+        command = (
+            f'source {shlex.quote(str(setup_file))} && '
+            'exec ros2 run generic_motor_driver '
+            'opennav_coverage_executor.py --ros-args '
+            f'{ros_arguments}'
+        )
+        self._start_process('coverage', 'bash', ['-lc', command])
+        self.statusBar().showMessage('Starting complete coverage')
+
+    def stop_coverage(self):
+        if not self._is_running('coverage'):
+            return
+        self._request_stop('coverage')
+        self._begin_zero_velocity_burst()
+        self.statusBar().showMessage('Canceling coverage')
 
     @staticmethod
     def _resolve_bag_directory(selected_path):
@@ -3102,7 +3506,21 @@ class RunManagerWindow(QMainWindow):
         self.statusBar().showMessage('Force-stopping ROS processes')
 
     def open_rviz(self):
-        self._start_process('rviz', 'rviz2', [])
+        if self._is_running('rviz'):
+            return
+        arguments = []
+        if self._is_running('simulation'):
+            if not self.rviz_gui_switch.isChecked():
+                return
+            rviz_config = (
+                Path('/opt/ros')
+                / os.environ.get('ROS_DISTRO', REQUIRED_ROS_DISTRO)
+                / 'share/nav2_bringup/rviz/nav2_default_view.rviz'
+            )
+            if rviz_config.is_file():
+                arguments.extend(['-d', str(rviz_config)])
+            arguments.extend(['--ros-args', '-p', 'use_sim_time:=True'])
+        self._start_process('rviz', 'rviz2', arguments)
 
     def open_gazebo(self):
         if (

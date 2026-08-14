@@ -21,6 +21,8 @@ from robot_run_manager.main import (
     SIMULATION_WORLDS,
     TUNING_VARIABLES,
     find_autonomy_workspace,
+    qxl_errors_from_journal,
+    qxl_vram_mib_from_journal,
 )
 
 
@@ -71,3 +73,20 @@ def test_tuning_variables_have_safe_ranges_and_descriptions():
         assert name and group and description
         assert minimum <= default <= maximum
         assert decimals in (0, 1, 2)
+
+
+def test_qxl_journal_parser_finds_graphics_failures():
+    journal = """
+kernel: [drm] qxl: 16M of VRAM memory size
+Xorg: (EE) qxl(0): EXECBUFFER failed
+kernel: qxl_gem_object_create: Failed to allocate GEM object
+kernel: unrelated device error
+"""
+    errors = qxl_errors_from_journal(journal)
+    assert len(errors) == 2
+    assert qxl_vram_mib_from_journal(journal) == 16
+
+
+def test_qxl_journal_parser_accepts_clean_non_qxl_output():
+    assert qxl_errors_from_journal('virtio_gpu initialized') == []
+    assert qxl_vram_mib_from_journal('virtio_gpu initialized') is None

@@ -21,6 +21,11 @@ from robot_run_manager.main import find_workspace
 def wrapper_text(workspace):
     """Return the wrapper which builds and prepares the ROS environment."""
     quoted_workspace = shlex.quote(str(workspace))
+    fastdds_profile = (
+        workspace / 'install/robot_run_manager/share/robot_run_manager'
+        / 'fastdds_udp_only.xml'
+    )
+    quoted_fastdds_profile = shlex.quote(str(fastdds_profile))
     return (
         '#!/usr/bin/env bash\n'
         'set -eo pipefail\n'
@@ -28,6 +33,8 @@ def wrapper_text(workspace):
         'source /opt/ros/humble/setup.bash\n'
         'colcon build --symlink-install --base-paths src\n'
         f'source {shlex.quote(str(workspace / "install/setup.bash"))}\n'
+        f'export FASTDDS_DEFAULT_PROFILES_FILE={quoted_fastdds_profile}\n'
+        f'export FASTRTPS_DEFAULT_PROFILES_FILE={quoted_fastdds_profile}\n'
         'exec ros2 run robot_run_manager run_manager_gui\n'
     )
 
