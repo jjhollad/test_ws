@@ -1,0 +1,250 @@
+<?xml version="1.0"?>
+<robot name="rectangular_robot" xmlns:xacro="http://ros.org/wiki/xacro">
+
+  <!-- Include lidar xacro files -->
+  <xacro:include filename="$(find create_description)/urdf/lidar.urdf.xacro" />
+  <xacro:include filename="$(find create_description)/urdf/lidar_gazebo.urdf.xacro" />
+
+  <!-- Material Definitions (must be global for RViz) -->
+  <material name="blue">
+    <color rgba="0 0 1 1"/>
+  </material>
+  <material name="black">
+    <color rgba="0 0 0 1"/>
+  </material>
+  <material name="gray">
+    <color rgba="0.5 0.5 0.5 1"/>
+  </material>
+  <material name="orange">
+    <color rgba="1 0.5 0 1"/>
+  </material>
+  <material name="dark_gray">
+    <color rgba="0.3 0.3 0.3 1"/>
+  </material>
+
+  <!-- Properties (parameters) -->
+  <xacro:property name="PI" value="3.1415926535897931" />
+  
+  <!-- Base dimensions -->
+  <xacro:property name="base_length" value="0.8" />
+  <xacro:property name="base_width" value="0.6" />  <!-- Adjusted to not extend past wheels -->
+  <xacro:property name="base_height" value="0.1" />
+  <xacro:property name="base_mass" value="25.0" />
+  
+  <!-- Wheel properties -->
+  <xacro:property name="wheel_radius" value="0.12" />
+  <xacro:property name="wheel_width" value="0.05" />
+  <xacro:property name="wheel_mass" value="2.0" />
+  <xacro:property name="wheel_separation" value="0.57" />  <!-- Distance between rear wheels -->
+  <!-- Note: Rear wheels are forward by one wheel radius (origin is between rear wheels) -->
+  
+  <!-- Caster: keep radius == wheel_radius so sphere center height matches rear axle height (level base).
+       If caster_radius < wheel_radius, the front sits low and the chassis pitches nose-down (and lidar tilts). -->
+  <xacro:property name="caster_radius" value="${wheel_radius}" />
+  <xacro:property name="caster_mass" value="0.5" />
+  <!-- Caster at front of robot (base extends from x=0 to x=base_length, center at base_length/2) -->
+  <xacro:property name="caster_x_offset" value="${base_length}" />  <!-- Front edge of base -->
+  
+  <!-- Sweeping wheel properties -->
+  <xacro:property name="sweep_wheel_radius" value="0.15" />
+  <xacro:property name="sweep_wheel_length" value="0.03" />
+  <!-- Non-physical visual marker only; Nav2 footprint handles avoidance envelope. -->
+  <xacro:property name="sweep_wheel_mass" value="0.0001" />
+  <!-- Sweep wheel at front of robot -->
+  <xacro:property name="sweep_wheel_x" value="${base_length}" />  <!-- Front edge of base -->
+  <xacro:property name="sweep_wheel_y" value="-0.275" />  <!-- Negative y = right side -->
+  
+  <!-- Macro for a wheel: axis must differ on left vs right so +joint velocity = forward for both (RViz). -->
+  <xacro:macro name="wheel" params="name x y z axis_xyz">
+    <link name="${name}">
+      <visual>
+        <origin xyz="0 0 0" rpy="${PI/2} 0 0"/>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+        </geometry>
+        <material name="black"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="${PI/2} 0 0"/>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <mass value="${wheel_mass}"/>
+        <inertia ixx="0.1" ixy="0" ixz="0" iyy="0.1" iyz="0" izz="0.1"/>
+      </inertial>
+    </link>
+    
+    <joint name="${name}_joint" type="continuous">
+      <parent link="base_link"/>
+      <child link="${name}"/>
+      <origin xyz="${x} ${y} ${z}" rpy="0 0 0"/>
+      <axis xyz="${axis_xyz}"/>
+    </joint>
+  </xacro:macro>
+
+  <!-- Base Link -->
+  <!-- Base origin is at ground level, centered between rear wheels -->
+  <link name="base_link">
+    <visual>
+      <!-- In simulation, keep chassis above ground by wheel radius to avoid floor dragging. -->
+      <origin xyz="${base_length/2} 0 ${wheel_radius + base_height/2}" rpy="0 0 0"/>
+      <geometry>
+        <box size="${base_length} ${base_width} ${base_height}"/>
+      </geometry>
+      <material name="blue"/>
+    </visual>
+    <collision>
+      <origin xyz="${base_length/2} 0 ${wheel_radius + base_height/2}" rpy="0 0 0"/>
+      <geometry>
+        <box size="${base_length} ${base_width} ${base_height}"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="${base_length/2} 0 ${wheel_radius + base_height/2}" rpy="0 0 0"/>
+      <mass value="${base_mass}"/>
+      <inertia ixx="1.0" ixy="0" ixz="0" iyy="1.0" iyz="0" izz="1.0"/>
+    </inertial>
+  </link>
+
+  <!-- Rear wheels for Gazebo diff-drive: keep both joint axes aligned (+Y) so forward cmd drives straight. -->
+  <xacro:wheel name="left_rear_wheel" x="${wheel_radius}" y="${wheel_separation/2}" z="${wheel_radius}" axis_xyz="0 1 0"/>
+  <xacro:wheel name="right_rear_wheel" x="${wheel_radius}" y="${-wheel_separation/2}" z="${wheel_radius}" axis_xyz="0 1 0"/>
+  <!-- Front Caster Wheel -->
+  <link name="front_caster_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <sphere radius="${caster_radius}"/>
+      </geometry>
+      <material name="gray"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <sphere radius="${caster_radius}"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="${caster_mass}"/>
+      <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/>
+    </inertial>
+  </link>
+
+  <joint name="front_caster_wheel_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="front_caster_wheel"/>
+    <!-- Sphere center at same z as rear wheel centers (wheel_radius) so all contacts lie on z=0 when base is level. -->
+    <origin xyz="${caster_x_offset} 0 ${wheel_radius}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Front caster: zero Coulomb friction (ideal ball; avoids scrub braking turns). -->
+  <gazebo reference="front_caster_wheel">
+    <mu1>0.0</mu1>
+    <mu2>0.0</mu2>
+    <!-- Dampen the rigid sphere/ground contact.  Gazebo's stiff defaults can
+         inject vertical energy into a heavy three-contact-point chassis. -->
+    <kp>100000.0</kp>
+    <kd>100.0</kd>
+    <maxVel>0.05</maxVel>
+    <minDepth>0.001</minDepth>
+  </gazebo>
+
+  <!-- Driven wheels need predictable longitudinal contact and damped normal
+       contact; otherwise the diff-drive controller can excite chassis hop. -->
+  <gazebo reference="left_rear_wheel">
+    <mu1>1.0</mu1>
+    <mu2>1.0</mu2>
+    <kp>100000.0</kp>
+    <kd>100.0</kd>
+    <maxVel>0.05</maxVel>
+    <minDepth>0.001</minDepth>
+  </gazebo>
+  <gazebo reference="right_rear_wheel">
+    <mu1>1.0</mu1>
+    <mu2>1.0</mu2>
+    <kp>100000.0</kp>
+    <kd>100.0</kd>
+    <maxVel>0.05</maxVel>
+    <minDepth>0.001</minDepth>
+  </gazebo>
+
+  <!-- Sweeping Wheel (parallel to floor - horizontal cylinder) -->
+  <link name="sweeping_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="${sweep_wheel_radius}" length="${sweep_wheel_length}"/>
+      </geometry>
+      <material name="orange"/>
+    </visual>
+    <!-- No collision on purpose: keep this link out of Gazebo contact dynamics. -->
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="${sweep_wheel_mass}"/>
+      <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+    </inertial>
+  </link>
+
+  <joint name="sweeping_wheel_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="sweeping_wheel"/>
+    <!-- Keep sweeper clear of floor contact in simulation. -->
+    <origin xyz="${sweep_wheel_x} ${sweep_wheel_y} ${sweep_wheel_radius}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Base Footprint (for navigation) - positioned at origin between rear wheels -->
+  <link name="base_footprint"/>
+
+  <joint name="base_footprint_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <!-- base_footprint is at ground level (z=0) at the midpoint between rear wheels -->
+    <!-- base_link origin is also at ground level, so no z offset needed -->
+    <origin xyz="${wheel_radius} 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Keep lidar directly over rear axle (real robot mounting). -->
+  <xacro:lidar parent_link="base_link" x="${wheel_radius}" y="0" z="${base_height + 0.25}"/>
+
+  <!-- Gazebo diff-drive for Classic simulation -->
+  <gazebo>
+    <plugin name="diff_drive_controller" filename="libgazebo_ros_diff_drive.so">
+      <ros>
+        <remapping>cmd_vel:=cmd_vel</remapping>
+        <remapping>odom:=odom</remapping>
+      </ros>
+      <update_rate>50</update_rate>
+      <left_joint>left_rear_wheel_joint</left_joint>
+      <right_joint>right_rear_wheel_joint</right_joint>
+      <wheel_separation>${wheel_separation}</wheel_separation>
+      <wheel_diameter>${2.0 * wheel_radius}</wheel_diameter>
+      <max_wheel_torque>30.0</max_wheel_torque>
+      <max_wheel_acceleration>3.0</max_wheel_acceleration>
+      <command_timeout>0.25</command_timeout>
+      <publish_odom>true</publish_odom>
+      <publish_odom_tf>true</publish_odom_tf>
+      <publish_wheel_tf>false</publish_wheel_tf>
+      <odometry_frame>odom</odometry_frame>
+      <robot_base_frame>base_footprint</robot_base_frame>
+      <!-- Leave odometry_source unset for broad Gazebo Classic compatibility. -->
+    </plugin>
+
+    <!-- Publish simulated wheel joint states so robot_state_publisher can produce wheel TF in RViz. -->
+    <plugin name="joint_state_publisher" filename="libgazebo_ros_joint_state_publisher.so">
+      <ros>
+        <remapping>~/out:=joint_states</remapping>
+      </ros>
+      <update_rate>50</update_rate>
+      <joint_name>left_rear_wheel_joint</joint_name>
+      <joint_name>right_rear_wheel_joint</joint_name>
+    </plugin>
+  </gazebo>
+  
+  <!-- Gazebo plugin for lidar simulation -->
+  <xacro:sim_lidar/>
+
+</robot>

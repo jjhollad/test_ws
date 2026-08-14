@@ -40,5 +40,6 @@ Makefile
 *.log
 .cache/
 
-# Robot run datasets (transfer directly; do not commit large rosbag files)
-runs/
+# Robot run datasets. Large bag database files are stored through Git LFS.
+!runs/
+!runs/**
