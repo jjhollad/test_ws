@@ -65,6 +65,9 @@ robot when replaying.
 - a live, editable **Behavior Tree** tab uses `py_trees_ros` to show safety,
   localization, mission selection, wall tracing, corner geometry, recovery,
   and planner handoffs; selecting a leaf opens its persistent tuning controls;
+- a **Replay Dashboard** tab replays selected ROS 2 bags with `--clock`, opens
+  RViz with simulated time, and shows live `/cmd_vel`, `/odom`, `/amcl_pose`,
+  goal error, Nav2 status when available, and global/local plan sample counts;
 - guarded rolling Nav2 route extension, adjustable with **Path extension
   interval**, adds farther frontier poses near the route tail without rapid
   mid-route preemption;
@@ -131,10 +134,16 @@ runs/YYYY-MM-DD-HHMMSS/
 └── summary.json           # created by validation
 ```
 
-The requested recording topics are `/cmd_vel`, `/odom`, `/scan`, `/tf`,
-`/tf_static`, `/joint_states`, and `/relay_status`. Add camera or other sensor
-topics to `RECORD_TOPICS` in `robot_run_manager/main.py` when those sensors are
-installed.
+The requested recording topics include base motion and sensors, TF, map and
+costmap outputs, global/local Nav2 plans, Nav2 action status and feedback
+topics, best-effort action service event topics, lifecycle transition events,
+muxed command streams, contact/status topics, and exploration/OpenCV readouts.
+The run manager also republishes Nav2 goal transitions and terminal outcomes on
+`/robot_run_manager/action_goal_events` and
+`/robot_run_manager/action_goal_summary` with goal IDs, latest feedback, and
+recent warning/error logs. Hidden action topics are included in the recorder
+command. Add camera or other sensor topics to `RECORD_TOPICS` in
+`robot_run_manager/main.py` when those sensors are installed.
 
 Validation assigns each complete run to `train`, `validation`, or `test` using a
 stable hash of its run ID. Entire runs remain together; frames from one run are

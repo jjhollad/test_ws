@@ -14,13 +14,19 @@
 
 from pathlib import Path
 
+from action_msgs.msg import GoalInfo
+from rcl_interfaces.msg import Log
+
 from robot_run_manager.main import (
     ACTION_GROUPS,
     ACTION_TOOLTIPS,
     IMPLEMENTED_ACTIONS,
+    LOG_WARN_LEVEL,
+    RECORD_TOPICS,
     SIMULATION_WORLDS,
     TUNING_VARIABLES,
     find_autonomy_workspace,
+    goal_id_text,
     qxl_errors_from_journal,
     qxl_vram_mib_from_journal,
 )
@@ -97,3 +103,21 @@ kernel: unrelated device error
 def test_qxl_journal_parser_accepts_clean_non_qxl_output():
     assert qxl_errors_from_journal('virtio_gpu initialized') == []
     assert qxl_vram_mib_from_journal('virtio_gpu initialized') is None
+
+
+def test_goal_recording_topics_and_helpers_are_available():
+    goal = GoalInfo()
+    goal.goal_id.uuid = list(range(16))
+
+    assert goal_id_text(goal) == '000102030405060708090a0b0c0d0e0f'
+    assert LOG_WARN_LEVEL == Log.WARN[0]
+    assert '/robot_run_manager/action_goal_events' in RECORD_TOPICS
+    assert '/robot_run_manager/action_goal_summary' in RECORD_TOPICS
+    assert '/navigate_to_pose/_action/get_result/_service_event' in RECORD_TOPICS
+    assert '/navigate_through_poses/_action/get_result/_service_event' in RECORD_TOPICS
+    assert '/odometry/filtered' in RECORD_TOPICS
+    assert '/imu/data_raw' in RECORD_TOPICS
+    assert '/motor_speeds' in RECORD_TOPICS
+    assert '/serial_tx' in RECORD_TOPICS
+    assert '/serial_rx' in RECORD_TOPICS
+    assert '/relay_feedback' in RECORD_TOPICS

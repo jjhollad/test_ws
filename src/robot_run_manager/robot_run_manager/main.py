@@ -15,6 +15,7 @@
 import csv
 from datetime import datetime, timezone
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -25,7 +26,10 @@ import socket
 import subprocess
 import sys
 
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
+from nav_msgs.msg import Odometry, Path as NavigationPath
+from rosgraph_msgs.msg import Clock
+from rcl_interfaces.msg import Log
 from std_msgs.msg import String
 from PyQt5.QtCore import QProcess, QProcessEnvironment, QSettings, QTimer, Qt
 from PyQt5.QtGui import QColor, QTextCursor
@@ -58,6 +62,17 @@ from PyQt5.QtWidgets import (
 import rclpy
 
 from robot_run_manager.behavior_tree import SupervisorTree
+
+try:
+    from action_msgs.msg import GoalStatusArray
+except ImportError:
+    GoalStatusArray = None
+
+try:
+    from nav2_msgs.action import NavigateThroughPoses, NavigateToPose
+except ImportError:
+    NavigateThroughPoses = None
+    NavigateToPose = None
 
 
 ACTION_GROUPS = {
@@ -251,8 +266,25 @@ HIDDEN_SUPERVISOR_EXPLORATION_ACTIONS = {
 }
 
 RECORD_TOPICS = [
+    '/rosout',
+    '/parameter_events',
+    '/diagnostics',
+    '/robot_run_manager/action_goal_events',
+    '/robot_run_manager/action_goal_summary',
     '/cmd_vel',
+    '/cmd_vel_behaviors',
+    '/cmd_vel_joy',
+    '/cmd_vel_nav',
+    '/cmd_vel_navigation',
+    '/cmd_vel_opencv_mapping',
+    '/cmd_vel_wall',
     '/odom',
+    '/odometry/filtered',
+    '/amcl_pose',
+    '/initialpose',
+    '/goal_pose',
+    '/imu/data_raw',
+    '/imu/data',
     '/scan',
     '/scan_raw',
     '/scan_clear',
@@ -260,7 +292,123 @@ RECORD_TOPICS = [
     '/tf',
     '/tf_static',
     '/joint_states',
+    '/motor_speeds',
+    '/serial_tx',
+    '/serial_rx',
     '/relay_status',
+    '/relay_feedback',
+    '/mode',
+    '/bumper',
+    '/cliff',
+    '/wheeldrop',
+    '/battery/voltage',
+    '/battery/current',
+    '/battery/charge',
+    '/battery/charge_ratio',
+    '/battery/capacity',
+    '/battery/temperature',
+    '/battery/charging_state',
+    '/map',
+    '/map_updates',
+    '/plan',
+    '/received_global_plan',
+    '/transformed_global_plan',
+    '/local_plan',
+    '/waypoints',
+    '/wandering_path',
+    '/coverage_path',
+    '/coverage_marker',
+    '/coverage_marker_array',
+    '/coverage_poses',
+    '/robot_global_trace',
+    '/wall_alignment_path',
+    '/global_costmap/costmap',
+    '/global_costmap/costmap_updates',
+    '/global_costmap/costmap_raw',
+    '/global_costmap/published_footprint',
+    '/local_costmap/costmap',
+    '/local_costmap/costmap_updates',
+    '/local_costmap/costmap_raw',
+    '/local_costmap/published_footprint',
+    '/behavior_tree_log',
+    '/evaluation',
+    '/trajectory_cloud',
+    '/cost_cloud',
+    '/controller_server/evaluation',
+    '/controller_server/trajectory_cloud',
+    '/controller_server/cost_cloud',
+    '/controller_server/FollowPath/evaluation',
+    '/controller_server/FollowPath/trajectory_cloud',
+    '/controller_server/FollowPath/cost_cloud',
+    '/navigate_to_pose/_action/status',
+    '/navigate_to_pose/_action/feedback',
+    '/navigate_to_pose/_action/send_goal/_service_event',
+    '/navigate_to_pose/_action/get_result/_service_event',
+    '/navigate_to_pose/_action/cancel_goal/_service_event',
+    '/navigate_through_poses/_action/status',
+    '/navigate_through_poses/_action/feedback',
+    '/navigate_through_poses/_action/send_goal/_service_event',
+    '/navigate_through_poses/_action/get_result/_service_event',
+    '/navigate_through_poses/_action/cancel_goal/_service_event',
+    '/compute_path_to_pose/_action/status',
+    '/compute_path_to_pose/_action/feedback',
+    '/compute_path_to_pose/_action/send_goal/_service_event',
+    '/compute_path_to_pose/_action/get_result/_service_event',
+    '/compute_path_to_pose/_action/cancel_goal/_service_event',
+    '/compute_path_through_poses/_action/status',
+    '/compute_path_through_poses/_action/feedback',
+    '/compute_path_through_poses/_action/send_goal/_service_event',
+    '/compute_path_through_poses/_action/get_result/_service_event',
+    '/compute_path_through_poses/_action/cancel_goal/_service_event',
+    '/follow_path/_action/status',
+    '/follow_path/_action/feedback',
+    '/follow_path/_action/send_goal/_service_event',
+    '/follow_path/_action/get_result/_service_event',
+    '/follow_path/_action/cancel_goal/_service_event',
+    '/follow_waypoints/_action/status',
+    '/follow_waypoints/_action/feedback',
+    '/follow_waypoints/_action/send_goal/_service_event',
+    '/follow_waypoints/_action/get_result/_service_event',
+    '/follow_waypoints/_action/cancel_goal/_service_event',
+    '/smooth_path/_action/status',
+    '/smooth_path/_action/feedback',
+    '/smooth_path/_action/send_goal/_service_event',
+    '/smooth_path/_action/get_result/_service_event',
+    '/smooth_path/_action/cancel_goal/_service_event',
+    '/spin/_action/status',
+    '/spin/_action/feedback',
+    '/spin/_action/send_goal/_service_event',
+    '/spin/_action/get_result/_service_event',
+    '/spin/_action/cancel_goal/_service_event',
+    '/backup/_action/status',
+    '/backup/_action/feedback',
+    '/backup/_action/send_goal/_service_event',
+    '/backup/_action/get_result/_service_event',
+    '/backup/_action/cancel_goal/_service_event',
+    '/drive_on_heading/_action/status',
+    '/drive_on_heading/_action/feedback',
+    '/drive_on_heading/_action/send_goal/_service_event',
+    '/drive_on_heading/_action/get_result/_service_event',
+    '/drive_on_heading/_action/cancel_goal/_service_event',
+    '/wait/_action/status',
+    '/wait/_action/feedback',
+    '/wait/_action/send_goal/_service_event',
+    '/wait/_action/get_result/_service_event',
+    '/wait/_action/cancel_goal/_service_event',
+    '/assisted_teleop/_action/status',
+    '/assisted_teleop/_action/feedback',
+    '/assisted_teleop/_action/send_goal/_service_event',
+    '/assisted_teleop/_action/get_result/_service_event',
+    '/assisted_teleop/_action/cancel_goal/_service_event',
+    '/bt_navigator/transition_event',
+    '/controller_server/transition_event',
+    '/planner_server/transition_event',
+    '/smoother_server/transition_event',
+    '/behavior_server/transition_event',
+    '/waypoint_follower/transition_event',
+    '/velocity_smoother/transition_event',
+    '/map_server/transition_event',
+    '/amcl/transition_event',
     '/chassis_contacts',
     '/front_caster_contacts',
     '/left_rear_wheel_contacts',
@@ -271,6 +419,8 @@ RECORD_TOPICS = [
     '/frontier_handoff_requested',
     '/frontier_navigation_complete',
     '/exploration_coordination_state',
+    '/mapping_return_home',
+    '/wall_tracing_active',
     '/opencv_hallway_mapping_driver/status',
     '/mapping_progress_monitor/status',
     '/frontier_selector/status',
@@ -742,6 +892,51 @@ QXL_ERROR_PATTERNS = (
     'qxl_process_single_command',
 )
 MINIMUM_QXL_VRAM_MIB = 64
+REPLAY_STALE_SECONDS = {
+    'cmd_vel': 0.75,
+    'odom': 0.75,
+    'amcl': 1.50,
+    'goal': 10.00,
+    'global_plan': 3.00,
+    'local_plan': 1.50,
+    'status': 2.00,
+}
+GOAL_STATUS_LABELS = {
+    0: 'UNKNOWN',
+    1: 'ACCEPTED',
+    2: 'EXECUTING',
+    3: 'CANCELING',
+    4: 'SUCCEEDED',
+    5: 'CANCELED',
+    6: 'ABORTED',
+}
+TERMINAL_GOAL_STATUSES = {4, 5, 6}
+MONITORED_ACTIONS = {
+    'NavigateToPose': '/navigate_to_pose',
+    'NavigateThroughPoses': '/navigate_through_poses',
+}
+LOG_WARN_LEVEL = Log.WARN[0] if isinstance(Log.WARN, bytes) else Log.WARN
+
+
+def yaw_from_quaternion(quaternion):
+    """Return planar yaw from a ROS quaternion."""
+    siny_cosp = 2.0 * (
+        quaternion.w * quaternion.z + quaternion.x * quaternion.y
+    )
+    cosy_cosp = 1.0 - 2.0 * (
+        quaternion.y * quaternion.y + quaternion.z * quaternion.z
+    )
+    return math.atan2(siny_cosp, cosy_cosp)
+
+
+def normalized_angle(angle):
+    """Wrap an angle to [-pi, pi]."""
+    return math.atan2(math.sin(angle), math.cos(angle))
+
+
+def goal_id_text(goal_info):
+    """Return a stable compact text form for an action goal UUID."""
+    return ''.join(f'{value:02x}' for value in goal_info.goal_id.uuid)
 
 
 def qxl_errors_from_journal(text):
@@ -819,6 +1014,12 @@ class RunManagerWindow(QMainWindow):
         self.config_sliders = {}
         self.config_value_labels = {}
         self.coverage_inputs = {}
+        self.replay_metric_labels = {}
+        self.replay_selected_run = None
+        self.replay_state = {}
+        self.action_goal_states = {}
+        self.action_feedback = {}
+        self.recent_action_logs = []
         self.wall_behavior_state = 'inactive'
         self.coordination_state = 'FRONTIER_NAVIGATION'
         self.exploration_state = 'STOPPED'
@@ -837,6 +1038,99 @@ class RunManagerWindow(QMainWindow):
             self._exploration_status_changed,
             10,
         )
+        self.action_goal_event_publisher = ros_node.create_publisher(
+            String, '/robot_run_manager/action_goal_events', 10
+        )
+        self.action_goal_summary_publisher = ros_node.create_publisher(
+            String, '/robot_run_manager/action_goal_summary', 10
+        )
+        self.rosout_subscription = ros_node.create_subscription(
+            Log, '/rosout', self._rosout_changed, 100
+        )
+        self.action_status_subscriptions = []
+        if GoalStatusArray is not None:
+            for action_name, action_topic in MONITORED_ACTIONS.items():
+                self.action_status_subscriptions.append(
+                    ros_node.create_subscription(
+                        GoalStatusArray,
+                        f'{action_topic}/_action/status',
+                        lambda message, name=action_name:
+                            self._action_status_changed(name, message),
+                        10,
+                    )
+                )
+        self.action_feedback_subscriptions = []
+        if NavigateToPose is not None:
+            self.action_feedback_subscriptions.append(
+                ros_node.create_subscription(
+                    NavigateToPose.Impl.FeedbackMessage,
+                    '/navigate_to_pose/_action/feedback',
+                    lambda message: self._action_feedback_changed(
+                        'NavigateToPose', message
+                    ),
+                    10,
+                )
+            )
+        if NavigateThroughPoses is not None:
+            self.action_feedback_subscriptions.append(
+                ros_node.create_subscription(
+                    NavigateThroughPoses.Impl.FeedbackMessage,
+                    '/navigate_through_poses/_action/feedback',
+                    lambda message: self._action_feedback_changed(
+                        'NavigateThroughPoses', message
+                    ),
+                    10,
+                )
+            )
+        self.replay_subscriptions = [
+            ros_node.create_subscription(
+                Clock, '/clock', self._replay_clock_changed, 10
+            ),
+            ros_node.create_subscription(
+                Twist, '/cmd_vel', self._replay_cmd_vel_changed, 10
+            ),
+            ros_node.create_subscription(
+                Odometry, '/odom', self._replay_odom_changed, 10
+            ),
+            ros_node.create_subscription(
+                PoseWithCovarianceStamped,
+                '/amcl_pose',
+                self._replay_amcl_changed,
+                10,
+            ),
+            ros_node.create_subscription(
+                PoseStamped, '/goal_pose', self._replay_goal_changed, 10
+            ),
+            ros_node.create_subscription(
+                NavigationPath, '/plan', self._replay_global_plan_changed, 10
+            ),
+            ros_node.create_subscription(
+                NavigationPath,
+                '/local_plan',
+                self._replay_local_plan_changed,
+                10,
+            ),
+        ]
+        if GoalStatusArray is not None:
+            self.replay_subscriptions.extend([
+                ros_node.create_subscription(
+                    GoalStatusArray,
+                    '/navigate_to_pose/_action/status',
+                    lambda message: self._replay_nav_status_changed(
+                        'NavigateToPose', message
+                    ),
+                    10,
+                ),
+                ros_node.create_subscription(
+                    GoalStatusArray,
+                    '/navigate_through_poses/_action/status',
+                    lambda message: self._replay_nav_status_changed(
+                        'NavigateThroughPoses', message
+                    ),
+                    10,
+                ),
+            ])
+        self._reset_replay_dashboard_state()
 
         self.stop_timer = QTimer(self)
         self.stop_timer.setInterval(50)
@@ -859,6 +1153,12 @@ class RunManagerWindow(QMainWindow):
         self.behavior_tree_timer.timeout.connect(self._tick_behavior_tree)
         self.behavior_tree_timer.start()
         self._tick_behavior_tree()
+        self.replay_dashboard_timer = QTimer(self)
+        self.replay_dashboard_timer.setInterval(250)
+        self.replay_dashboard_timer.timeout.connect(
+            self._refresh_replay_dashboard
+        )
+        self.replay_dashboard_timer.start()
         self._update_controls()
 
     def _apply_settings_migrations(self):
@@ -1115,6 +1415,7 @@ class RunManagerWindow(QMainWindow):
 
         tabs.addTab(self._build_configuration_tab(), 'Configuration')
         tabs.addTab(self._build_coverage_tab(), 'Coverage')
+        tabs.addTab(self._build_replay_dashboard_tab(), 'Replay Dashboard')
         tabs.addTab(self._build_behavior_tree_tab(), 'Behavior Tree')
         self.setCentralWidget(tabs)
         status = QStatusBar()
@@ -1361,6 +1662,406 @@ class RunManagerWindow(QMainWindow):
             return control.currentText()
         return control.value()
 
+    def _build_replay_dashboard_tab(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        introduction = QLabel(
+            'Replay one recorded run with bag time, open RViz on the same ROS '
+            'graph, and watch navigation outputs update live beside it.'
+        )
+        introduction.setWordWrap(True)
+        layout.addWidget(introduction)
+
+        run_box = QGroupBox('Recorded run')
+        run_layout = QGridLayout(run_box)
+        run_layout.addWidget(QLabel('Run or bag folder:'), 0, 0)
+        self.replay_run_input = QLineEdit()
+        self.replay_run_input.setPlaceholderText(
+            str(self.workspace / 'runs' / 'YYYY-MM-DD-HHMMSS')
+        )
+        self.replay_run_input.textChanged.connect(
+            self._replay_run_text_changed
+        )
+        run_layout.addWidget(self.replay_run_input, 0, 1)
+        browse = QPushButton('Browse')
+        browse.clicked.connect(self.select_replay_run)
+        run_layout.addWidget(browse, 0, 2)
+        run_layout.addWidget(QLabel('Playback speed:'), 1, 0)
+        self.replay_rate_input = QDoubleSpinBox()
+        self.replay_rate_input.setRange(0.05, 4.00)
+        self.replay_rate_input.setDecimals(2)
+        self.replay_rate_input.setSingleStep(0.25)
+        self.replay_rate_input.setValue(1.00)
+        self.replay_rate_input.setSuffix(' x')
+        run_layout.addWidget(self.replay_rate_input, 1, 1)
+        self.replay_loop_switch = QCheckBox('Loop playback')
+        run_layout.addWidget(self.replay_loop_switch, 1, 2)
+        run_layout.setColumnStretch(1, 1)
+        layout.addWidget(run_box)
+
+        control_row = QHBoxLayout()
+        self.replay_start_button = QPushButton('Start Replay + RViz')
+        self.replay_start_button.clicked.connect(self.start_replay_dashboard)
+        control_row.addWidget(self.replay_start_button)
+        self.replay_stop_button = QPushButton('Stop Replay')
+        self.replay_stop_button.clicked.connect(self.stop_replay_dashboard)
+        control_row.addWidget(self.replay_stop_button)
+        open_rviz_button = QPushButton('Open RViz')
+        open_rviz_button.clicked.connect(self.open_replay_rviz)
+        control_row.addWidget(open_rviz_button)
+        control_row.addStretch(1)
+        layout.addLayout(control_row)
+
+        metrics_box = QGroupBox('Live navigation outputs')
+        metrics_layout = QGridLayout(metrics_box)
+        metric_specs = [
+            ('clock', 'ROS time'),
+            ('cmd_vel', 'Commanded velocity'),
+            ('odom_pose', 'Odometry pose'),
+            ('odom_velocity', 'Odometry velocity'),
+            ('amcl_pose', 'AMCL pose'),
+            ('goal_error', 'Goal error'),
+            ('nav_status', 'Nav2 status'),
+            ('plans', 'Plan samples'),
+        ]
+        for row, (key, label) in enumerate(metric_specs):
+            metrics_layout.addWidget(QLabel(label + ':'), row, 0)
+            value = QLabel('waiting for replay data')
+            value.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            metrics_layout.addWidget(value, row, 1)
+            self.replay_metric_labels[key] = value
+        metrics_layout.setColumnStretch(1, 1)
+        layout.addWidget(metrics_box)
+
+        self.replay_output = QPlainTextEdit()
+        self.replay_output.setReadOnly(True)
+        self.replay_output.setMaximumBlockCount(2000)
+        self.replay_output.setPlaceholderText(
+            'Replay events, Nav2 action transitions, and diagnostic notes'
+        )
+        layout.addWidget(self.replay_output, 1)
+        self._refresh_replay_dashboard()
+        return page
+
+    def _reset_replay_dashboard_state(self):
+        self.replay_state = {
+            'cmd_vel': {'value': None, 'stamp': None},
+            'odom': {'value': None, 'stamp': None},
+            'amcl': {'value': None, 'stamp': None},
+            'goal': {'value': None, 'stamp': None},
+            'global_plan': {'value': None, 'stamp': None},
+            'local_plan': {'value': None, 'stamp': None},
+            'status': {},
+            'clock_nanoseconds': None,
+        }
+
+    def _replay_run_text_changed(self, value):
+        self.replay_selected_run = Path(value).expanduser() if value else None
+        self._refresh_replay_dashboard()
+
+    def select_replay_run(self):
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            'Select a run folder or rosbag folder',
+            str(self.workspace / 'runs'),
+        )
+        if selected:
+            self.replay_run_input.setText(selected)
+
+    def _selected_replay_bag_directory(self):
+        if self.replay_selected_run is None:
+            return None
+        return self._resolve_bag_directory(self.replay_selected_run)
+
+    def start_replay_dashboard(self):
+        if self._is_running('replay'):
+            self.statusBar().showMessage('Replay is already running')
+            return
+        if (
+            self._is_real_robot_role()
+            or not self.preflight_passed
+            or self._is_running('recording')
+            or self._is_running('robot')
+            or self._is_running('mapping')
+        ):
+            QMessageBox.information(
+                self,
+                'Replay unavailable',
+                'Select Development / simulation, run Preflight Check, and stop '
+                'robot, mapping, or recording processes before replaying a bag.',
+            )
+            return
+        bag_directory = self._selected_replay_bag_directory()
+        if bag_directory is None:
+            QMessageBox.warning(
+                self,
+                'No rosbag found',
+                'Select a run containing bag/metadata.yaml or select the bag '
+                'directory itself.',
+            )
+            return
+        self._reset_replay_dashboard_state()
+        if hasattr(self, 'replay_output'):
+            self.replay_output.clear()
+        arguments = [
+            'bag',
+            'play',
+            str(bag_directory),
+            '--clock',
+            '--rate',
+            f'{self.replay_rate_input.value():.2f}',
+        ]
+        if self.replay_loop_switch.isChecked():
+            arguments.append('--loop')
+        self._start_process('replay', 'ros2', arguments)
+        self._append_replay_event(f'Replaying bag: {bag_directory}')
+        QTimer.singleShot(1200, self.open_replay_rviz)
+
+    def stop_replay_dashboard(self):
+        self._request_stop('replay')
+        self._append_replay_event('Replay stop requested')
+        self.statusBar().showMessage('Stopping replay')
+
+    def open_replay_rviz(self):
+        self.open_rviz(force_sim_time=True)
+
+    def _append_replay_event(self, text):
+        if not hasattr(self, 'replay_output'):
+            return
+        timestamp = datetime.now().astimezone().strftime('%H:%M:%S')
+        self.replay_output.appendPlainText(f'[{timestamp}] {text}')
+
+    @staticmethod
+    def _stamp_nanoseconds(stamp):
+        return stamp.sec * 1000000000 + stamp.nanosec
+
+    def _current_replay_clock(self):
+        return self.replay_state.get('clock_nanoseconds')
+
+    def _record_replay_topic(self, key, value, stamp_nanoseconds):
+        if not self._is_running('replay'):
+            return
+        clock_nanoseconds = self._current_replay_clock()
+        last_stamp = self.replay_state[key].get('stamp')
+        if last_stamp is not None and stamp_nanoseconds < last_stamp:
+            return
+        if (
+            clock_nanoseconds is not None
+            and stamp_nanoseconds > clock_nanoseconds + 1000000000
+        ):
+            return
+        self.replay_state[key] = {
+            'value': value,
+            'stamp': stamp_nanoseconds,
+        }
+
+    def _fresh_replay_value(self, key):
+        entry = self.replay_state[key]
+        value = entry.get('value')
+        stamp = entry.get('stamp')
+        clock_nanoseconds = self._current_replay_clock()
+        if (
+            value is None
+            or stamp is None
+            or clock_nanoseconds is None
+            or not self._is_running('replay')
+        ):
+            return None, None
+        age_seconds = (clock_nanoseconds - stamp) / 1e9
+        if age_seconds < -0.25:
+            return None, age_seconds
+        stale_seconds = REPLAY_STALE_SECONDS.get(key, 1.0)
+        if age_seconds > stale_seconds:
+            return None, age_seconds
+        return value, age_seconds
+
+    def _stale_text(self, topic_name, age_seconds):
+        if age_seconds is None:
+            return f'waiting for {topic_name}'
+        return f'stale {topic_name}: age={age_seconds:.2f} s'
+
+    def _replay_clock_changed(self, message):
+        if not self._is_running('replay'):
+            return
+        clock_nanoseconds = self._stamp_nanoseconds(message.clock)
+        previous = self.replay_state.get('clock_nanoseconds')
+        if previous is not None and clock_nanoseconds < previous:
+            self._reset_replay_dashboard_state()
+            self._append_replay_event('Replay clock moved backward; clearing old values')
+        self.replay_state['clock_nanoseconds'] = clock_nanoseconds
+
+    def _replay_cmd_vel_changed(self, message):
+        clock_nanoseconds = self._current_replay_clock()
+        if clock_nanoseconds is not None:
+            self._record_replay_topic('cmd_vel', message, clock_nanoseconds)
+
+    def _replay_odom_changed(self, message):
+        self._record_replay_topic(
+            'odom', message, self._stamp_nanoseconds(message.header.stamp)
+        )
+
+    def _replay_amcl_changed(self, message):
+        self._record_replay_topic(
+            'amcl', message, self._stamp_nanoseconds(message.header.stamp)
+        )
+
+    def _replay_goal_changed(self, message):
+        stamp_nanoseconds = self._stamp_nanoseconds(message.header.stamp)
+        self._record_replay_topic('goal', message, stamp_nanoseconds)
+        stored, _age = self._fresh_replay_value('goal')
+        if stored is not message:
+            return
+        position = message.pose.position
+        yaw = yaw_from_quaternion(message.pose.orientation)
+        self._append_replay_event(
+            f'Goal pose updated: x={position.x:.2f}, y={position.y:.2f}, '
+            f'yaw={yaw:.2f} rad'
+        )
+
+    def _replay_global_plan_changed(self, message):
+        self._record_replay_topic(
+            'global_plan',
+            len(message.poses),
+            self._stamp_nanoseconds(message.header.stamp),
+        )
+
+    def _replay_local_plan_changed(self, message):
+        self._record_replay_topic(
+            'local_plan',
+            len(message.poses),
+            self._stamp_nanoseconds(message.header.stamp),
+        )
+
+    def _replay_nav_status_changed(self, action_name, message):
+        if not self._is_running('replay'):
+            return
+        clock_nanoseconds = self._current_replay_clock()
+        if clock_nanoseconds is None:
+            return
+        if not message.status_list:
+            return
+        latest = message.status_list[-1]
+        label = GOAL_STATUS_LABELS.get(latest.status, str(latest.status))
+        previous = self.replay_state['status'].get(action_name, {}).get('value')
+        self.replay_state['status'][action_name] = {
+            'value': label,
+            'stamp': clock_nanoseconds,
+        }
+        if previous != label:
+            self._append_replay_event(f'{action_name}: {label}')
+
+    def _refresh_replay_dashboard(self):
+        if not self.replay_metric_labels:
+            return
+        bag_directory = self._selected_replay_bag_directory()
+        self.replay_start_button.setEnabled(
+            bag_directory is not None and not self._is_running('replay')
+        )
+        self.replay_stop_button.setEnabled(self._is_running('replay'))
+
+        clock_ns = self.replay_state.get('clock_nanoseconds')
+        if clock_ns is None:
+            clock_text = 'waiting for /clock'
+        else:
+            clock_text = f'{clock_ns / 1e9:.3f} s'
+        self.replay_metric_labels['clock'].setText(clock_text)
+
+        command, command_age = self._fresh_replay_value('cmd_vel')
+        self.replay_metric_labels['cmd_vel'].setText(
+            (
+                f'linear x={command.linear.x:.3f} m/s, '
+                f'angular z={command.angular.z:.3f} rad/s, '
+                f'age={command_age:.2f} s'
+            )
+            if command is not None else self._stale_text('/cmd_vel', command_age)
+        )
+
+        odom, odom_age = self._fresh_replay_value('odom')
+        if odom is None:
+            stale = self._stale_text('/odom', odom_age)
+            self.replay_metric_labels['odom_pose'].setText(stale)
+            self.replay_metric_labels['odom_velocity'].setText(stale)
+        else:
+            pose = odom.pose.pose
+            yaw = yaw_from_quaternion(pose.orientation)
+            twist = odom.twist.twist
+            self.replay_metric_labels['odom_pose'].setText(
+                f'x={pose.position.x:.2f}, y={pose.position.y:.2f}, '
+                f'yaw={yaw:.2f} rad, age={odom_age:.2f} s'
+            )
+            self.replay_metric_labels['odom_velocity'].setText(
+                f'linear x={twist.linear.x:.3f} m/s, '
+                f'angular z={twist.angular.z:.3f} rad/s, '
+                f'age={odom_age:.2f} s'
+            )
+
+        amcl, amcl_age = self._fresh_replay_value('amcl')
+        self.replay_metric_labels['amcl_pose'].setText(
+            f'{self._pose_with_covariance_text(amcl)}, age={amcl_age:.2f} s'
+            if amcl is not None else self._stale_text('/amcl_pose', amcl_age)
+        )
+        goal, _goal_age = self._fresh_replay_value('goal')
+        self.replay_metric_labels['goal_error'].setText(
+            self._goal_error_text(odom, goal)
+        )
+        if GoalStatusArray is None:
+            status = 'action_msgs Python bindings unavailable'
+        else:
+            status_parts = []
+            clock_nanoseconds = self._current_replay_clock()
+            for name, entry in sorted(self.replay_state['status'].items()):
+                age = None
+                if clock_nanoseconds is not None and entry.get('stamp') is not None:
+                    age = (clock_nanoseconds - entry['stamp']) / 1e9
+                if age is None or age <= REPLAY_STALE_SECONDS['status']:
+                    status_parts.append(f'{name}={entry["value"]}')
+            status = ', '.join(status_parts)
+        self.replay_metric_labels['nav_status'].setText(
+            status if status else 'waiting for Nav2 action status'
+        )
+        global_count, global_age = self._fresh_replay_value('global_plan')
+        local_count, local_age = self._fresh_replay_value('local_plan')
+        global_text = (
+            f'{global_count} age={global_age:.2f} s'
+            if global_count is not None
+            else self._stale_text('/plan', global_age)
+        )
+        local_text = (
+            f'{local_count} age={local_age:.2f} s'
+            if local_count is not None
+            else self._stale_text('/local_plan', local_age)
+        )
+        self.replay_metric_labels['plans'].setText(
+            f'global={global_text}, local={local_text}'
+        )
+
+    @staticmethod
+    def _pose_with_covariance_text(message):
+        pose = message.pose.pose
+        yaw = yaw_from_quaternion(pose.orientation)
+        covariance = message.pose.covariance
+        xy_covariance = covariance[0] + covariance[7]
+        yaw_covariance = covariance[35]
+        return (
+            f'x={pose.position.x:.2f}, y={pose.position.y:.2f}, '
+            f'yaw={yaw:.2f} rad, xy cov={xy_covariance:.4f}, '
+            f'yaw cov={yaw_covariance:.4f}'
+        )
+
+    @staticmethod
+    def _goal_error_text(odom, goal):
+        if odom is None or goal is None:
+            return 'waiting for /odom and /goal_pose'
+        robot_pose = odom.pose.pose
+        goal_pose = goal.pose
+        dx = goal_pose.position.x - robot_pose.position.x
+        dy = goal_pose.position.y - robot_pose.position.y
+        distance = math.hypot(dx, dy)
+        robot_yaw = yaw_from_quaternion(robot_pose.orientation)
+        goal_yaw = yaw_from_quaternion(goal_pose.orientation)
+        yaw_error = normalized_angle(goal_yaw - robot_yaw)
+        return f'distance={distance:.2f} m, yaw error={yaw_error:.2f} rad'
+
     def _build_behavior_tree_tab(self):
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -1531,6 +2232,135 @@ class RunManagerWindow(QMainWindow):
             f'Autonomous exploration: {self.exploration_state}'
         )
         self._update_controls()
+
+    def _rosout_changed(self, message):
+        if message.level < LOG_WARN_LEVEL:
+            return
+        entry = {
+            'time': self._stamp_nanoseconds(message.stamp),
+            'level': message.level,
+            'name': message.name,
+            'message': message.msg,
+            'file': message.file,
+            'function': message.function,
+            'line': message.line,
+        }
+        self.recent_action_logs.append(entry)
+        self.recent_action_logs = self.recent_action_logs[-40:]
+
+    def _action_feedback_changed(self, action_name, message):
+        goal_id = goal_id_text(message.goal_id)
+        feedback = message.feedback
+        payload = {
+            'current_pose': self._pose_payload(feedback.current_pose),
+            'navigation_time_sec': (
+                feedback.navigation_time.sec
+                + feedback.navigation_time.nanosec / 1e9
+            ),
+            'estimated_time_remaining_sec': (
+                feedback.estimated_time_remaining.sec
+                + feedback.estimated_time_remaining.nanosec / 1e9
+            ),
+            'number_of_recoveries': feedback.number_of_recoveries,
+            'distance_remaining': feedback.distance_remaining,
+        }
+        if hasattr(feedback, 'number_of_poses_remaining'):
+            payload['number_of_poses_remaining'] = (
+                feedback.number_of_poses_remaining
+            )
+        self.action_feedback[(action_name, goal_id)] = payload
+
+    def _action_status_changed(self, action_name, message):
+        if not self._is_running('recording'):
+            return
+        seen_current_statuses = set()
+        for status in message.status_list:
+            goal_id = goal_id_text(status.goal_info)
+            status_label = GOAL_STATUS_LABELS.get(
+                status.status, str(status.status)
+            )
+            key = (action_name, goal_id)
+            seen_current_statuses.add(key)
+            previous = self.action_goal_states.get(key)
+            if previous == status.status:
+                continue
+            self.action_goal_states[key] = status.status
+            payload = self._action_goal_payload(
+                action_name,
+                goal_id,
+                status.status,
+                status_label,
+                status.goal_info.stamp,
+            )
+            self._publish_action_goal_event(payload)
+        self._publish_action_goal_summary(seen_current_statuses)
+
+    def _action_goal_payload(
+        self, action_name, goal_id, status_code, status_label, goal_stamp
+    ):
+        key = (action_name, goal_id)
+        terminal = status_code in TERMINAL_GOAL_STATUSES
+        payload = {
+            'utc_timestamp': self._utc_now(),
+            'ros_time_nanoseconds': self.ros_node.get_clock().now().nanoseconds,
+            'action': action_name,
+            'action_topic': MONITORED_ACTIONS.get(action_name),
+            'goal_id': goal_id,
+            'goal_stamp_nanoseconds': self._stamp_nanoseconds(goal_stamp),
+            'status_code': status_code,
+            'status': status_label,
+            'terminal': terminal,
+            'latest_feedback': self.action_feedback.get(key),
+        }
+        if terminal:
+            payload['recent_warnings_or_errors'] = self.recent_action_logs[-8:]
+        return payload
+
+    def _publish_action_goal_event(self, payload):
+        self.action_goal_event_publisher.publish(
+            String(data=json.dumps(payload, sort_keys=True))
+        )
+
+    def _publish_action_goal_summary(self, visible_goal_keys):
+        summary = []
+        for key, status_code in sorted(self.action_goal_states.items()):
+            action_name, goal_id = key
+            status_label = GOAL_STATUS_LABELS.get(status_code, str(status_code))
+            summary.append({
+                'action': action_name,
+                'action_topic': MONITORED_ACTIONS.get(action_name),
+                'goal_id': goal_id,
+                'status_code': status_code,
+                'status': status_label,
+                'terminal': status_code in TERMINAL_GOAL_STATUSES,
+                'visible_in_status_array': key in visible_goal_keys,
+                'latest_feedback': self.action_feedback.get(key),
+            })
+        payload = {
+            'utc_timestamp': self._utc_now(),
+            'ros_time_nanoseconds': self.ros_node.get_clock().now().nanoseconds,
+            'goals': summary,
+            'recent_warnings_or_errors': self.recent_action_logs[-8:],
+        }
+        self.action_goal_summary_publisher.publish(
+            String(data=json.dumps(payload, sort_keys=True))
+        )
+
+    @staticmethod
+    def _pose_payload(message):
+        position = message.pose.position
+        orientation = message.pose.orientation
+        return {
+            'frame_id': message.header.frame_id,
+            'stamp_nanoseconds': (
+                message.header.stamp.sec * 1000000000
+                + message.header.stamp.nanosec
+            ),
+            'x': position.x,
+            'y': position.y,
+            'z': position.z,
+            'yaw': yaw_from_quaternion(orientation),
+        }
 
     def _spin_ros_once(self):
         rclpy.spin_once(self.ros_node, timeout_sec=0.0)
@@ -2210,6 +3040,10 @@ class RunManagerWindow(QMainWindow):
         data = bytes(process.readAllStandardOutput()).decode(errors='replace')
         if data:
             self.output.appendPlainText(data.rstrip())
+            if process == self.processes.get('replay') and hasattr(
+                self, 'replay_output'
+            ):
+                self.replay_output.appendPlainText(data.rstrip())
 
     def _process_started(self, name):
         self.output.appendPlainText(f'{name}: started')
@@ -2942,12 +3776,17 @@ class RunManagerWindow(QMainWindow):
         )
         if answer != QMessageBox.Ok:
             return
+        self._reset_replay_dashboard_state()
+        self.replay_selected_run = bag_directory
+        if hasattr(self, 'replay_run_input'):
+            self.replay_run_input.setText(str(bag_directory))
         self._start_process(
             'replay',
             'ros2',
-            ['bag', 'play', str(bag_directory)],
+            ['bag', 'play', str(bag_directory), '--clock'],
         )
         self.output.appendPlainText(f'Replaying bag: {bag_directory}')
+        self._append_replay_event(f'Replaying bag: {bag_directory}')
 
     def _select_run(self, title):
         selected = QFileDialog.getExistingDirectory(
@@ -3496,6 +4335,9 @@ class RunManagerWindow(QMainWindow):
             suffix += 1
         run_dir.mkdir()
         calibration_files = self._capture_calibration(run_dir)
+        self.action_goal_states.clear()
+        self.action_feedback.clear()
+        self.recent_action_logs.clear()
 
         events_path = run_dir / 'events.csv'
         with events_path.open('w', newline='', encoding='utf-8') as stream:
@@ -3531,7 +4373,14 @@ class RunManagerWindow(QMainWindow):
         self._start_process(
             'recording',
             'ros2',
-            ['bag', 'record', '-o', str(run_dir / 'bag'), *RECORD_TOPICS],
+            [
+                'bag',
+                'record',
+                '--include-hidden-topics',
+                '-o',
+                str(run_dir / 'bag'),
+                *RECORD_TOPICS,
+            ],
         )
 
     def stop_recording(self):
@@ -3638,12 +4487,17 @@ class RunManagerWindow(QMainWindow):
         self._start_process('kill_ros', 'bash', [str(script)])
         self.statusBar().showMessage('Force-stopping ROS processes')
 
-    def open_rviz(self):
+    def open_rviz(self, force_sim_time=False):
         if self._is_running('rviz'):
             return
         arguments = []
-        if self._is_running('simulation'):
-            if not self.rviz_gui_switch.isChecked():
+        use_sim_time = (
+            force_sim_time
+            or self._is_running('simulation')
+            or self._is_running('replay')
+        )
+        if use_sim_time:
+            if self._is_running('simulation') and not self.rviz_gui_switch.isChecked():
                 return
             rviz_config = (
                 Path('/opt/ros')
@@ -3711,6 +4565,7 @@ class RunManagerWindow(QMainWindow):
         if self._save_configuration():
             self.output.appendPlainText('Configuration settings saved.')
         self.behavior_tree_timer.stop()
+        self.replay_dashboard_timer.stop()
         self.ros_spin_timer.stop()
         self.supervisor_tree.shutdown()
         event.accept()
