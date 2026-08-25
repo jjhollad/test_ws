@@ -25,6 +25,10 @@ def test_launcher_sources_workspace():
     wrapper = wrapper_text(workspace)
     assert 'set -eo pipefail' in wrapper
     assert "cd '/tmp/example workspace'" in wrapper
+    assert (
+        "ROBOT_RUN_MANAGER_ACTIVE_NAV2_PARAMS="
+        "'/tmp/example workspace/run_manager_active_nav2_params.yaml'"
+    ) in wrapper
     assert 'source /opt/ros/humble/setup.bash' in wrapper
     assert 'colcon build --symlink-install --base-paths src' in wrapper
     assert '/tmp/example workspace/install/setup.bash' in wrapper

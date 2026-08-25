@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 
-"""Run the rectangular sweeper in Gazebo with SLAM, Nav2, and RViz."""
+"""Run the rectangular sweeper in Gazebo with localization, Nav2, and RViz."""
 
 import os
 
 from ament_index_python.packages import get_package_share_directory
-from nav2_common.launch import ReplaceString
+import launch
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
@@ -18,8 +18,65 @@ from launch.conditions import IfCondition, UnlessCondition
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, LaunchConfiguration
+from launch.utilities import (
+    normalize_to_list_of_substitutions,
+    perform_substitutions,
+)
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+
+
+class PersistedReplaceString(launch.Substitution):
+    """Replace strings in a YAML file and persist the exact generated file."""
+
+    def __init__(self, source_file, replacements, output_file):
+        super().__init__()
+        self._source_file = normalize_to_list_of_substitutions(source_file)
+        self._output_file = normalize_to_list_of_substitutions(output_file)
+        self._replacements = {
+            key: normalize_to_list_of_substitutions(value)
+            for key, value in replacements.items()
+        }
+
+    def describe(self):
+        return ""
+
+    def perform(self, context):
+        source_path = perform_substitutions(context, self._source_file)
+        output_path = perform_substitutions(context, self._output_file)
+        replacements = {
+            key: perform_substitutions(context, value)
+            for key, value in self._replacements.items()
+        }
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        temporary_path = f"{output_path}.tmp"
+        with open(source_path, "r", encoding="utf-8") as source:
+            with open(temporary_path, "w", encoding="utf-8") as output:
+                for line in source:
+                    for key, value in replacements.items():
+                        line = line.replace(key, value)
+                    output.write(line)
+        os.replace(temporary_path, output_path)
+        return output_path
+
+
+class ConditionalText(launch.Substitution):
+    """Return text when a boolean launch configuration is enabled."""
+
+    def __init__(self, launch_configuration, when_true, when_false=""):
+        super().__init__()
+        self._launch_configuration = launch_configuration
+        self._when_true = when_true
+        self._when_false = when_false
+
+    def describe(self):
+        return ""
+
+    def perform(self, context):
+        value = LaunchConfiguration(self._launch_configuration).perform(context)
+        if value.lower() in ("1", "true", "yes", "on"):
+            return self._when_true
+        return self._when_false
 
 
 def generate_launch_description():
@@ -30,12 +87,13 @@ def generate_launch_description():
     slam_share = get_package_share_directory("slam_toolbox")
     model = os.path.join(demo_share, "urdf", "rectangular_robot.urdf.xacro")
     default_world = os.path.join(demo_share, "worlds", "corridor_museum.world")
+    default_map = os.path.join(demo_share, "maps", "Sim_Map.yaml")
     robot_description = ParameterValue(Command(["xacro ", model]), value_type=str)
-    # Keep the stock Humble Nav2 configuration, but replace TurtleBot geometry
-    # and dynamics with the measured rectangular sweeper values. The footprint
-    # is relative to base_footprint at the rear axle: 1.05 m forward, 0.02 m
-    # behind, 0.35 m left, and 0.45 m right (including the side brush).
-    # Add SLAM Toolbox's standard mapping parameters to the common Nav2 file.
+    # Use the workspace Nav2 configuration as the single tuning source. The
+    # launch-time substitutions below are runtime bindings for simulation:
+    # enable Gazebo time, use the finite clearing scan for costmaps, substitute
+    # the GUI body-clearance value, and append SLAM Toolbox parameters only
+    # when an explicit mapping launch requests SLAM.
     # The synthetic no-return rays are 11.95 m; Karto treats readings at or
     # beyond its 11.90 m threshold as clearing rays with no occupied endpoint.
     with open(
@@ -49,15 +107,13 @@ def generate_launch_description():
         ).replace(
             "min_laser_range: 0.0", "min_laser_range: 0.12"
         ).replace(
-            # SLAM updates map->odom at the 5 Hz scan rate, so an unadjusted
-            # transform can already be 200 ms old when Nav2 consumes it. Use
-            # half a scan period of lead to keep it within Nav2's 200 ms
-            # tolerance. scan_clearer independently bounds corrected scan
-            # stamps to the current ROS clock, preventing sensor data itself
-            # from being published in the future. Keep the queue short so a
-            # timing discontinuity cannot replay obsolete laser data.
+            # Give Nav2 enough map->odom lead to survive controller loop jitter
+            # during MPPI turn segments. scan_clearer independently bounds
+            # corrected scan stamps to the current ROS clock, preventing sensor
+            # data itself from being published in the future. Keep the queue
+            # short so a timing discontinuity cannot replay obsolete laser data.
             "transform_timeout: 0.2",
-            "transform_timeout: 0.10\n    scan_queue_size: 5",
+            "transform_timeout: 0.30\n    scan_queue_size: 5",
         ).replace(
             # Long loop-closure solves can pause map->odom updates while
             # Gazebo odometry continues.  Retain enough correctly stamped TF
@@ -104,54 +160,39 @@ def generate_launch_description():
             "loop_match_minimum_response_fine: 0.55",
         )
 
-    nav2_params = ReplaceString(
-        source_file=os.path.join(nav2_share, "params", "nav2_params.yaml"),
+    tuned_nav2_params = os.path.join(
+        driver_share, "config", "nav2_params.yaml"
+    )
+    nav2_params = PersistedReplaceString(
+        source_file=tuned_nav2_params,
+        output_file=os.environ.get(
+            "ROBOT_RUN_MANAGER_ACTIVE_NAV2_PARAMS",
+            os.path.join(
+                os.path.expanduser("~"),
+                ".ros",
+                "robot_run_manager",
+                "active_nav2_params.yaml",
+            ),
+        ),
         replacements={
-            "robot_base_frame: base_link": "robot_base_frame: base_footprint",
-            "robot_radius: 0.22": (
+            "use_sim_time: False": "use_sim_time: True",
+            "use_sim_time: false": "use_sim_time: true",
+            'footprint: "[[1.05, 0.35], [1.05, -0.45], '
+            '[-0.02, -0.45], [-0.02, 0.35]]"': (
                 'footprint: "[[1.05, 0.35], [1.05, -0.45], '
                 '[-0.02, -0.45], [-0.02, 0.35]]"\n'
                 '      footprint_padding: __NAV2_BODY_CLEARANCE__'
             ),
-            # The stock TurtleBot inflation field falls almost to free-space
-            # cost before this long rectangular chassis has room to turn.
-            # Keep a useful wall gradient for a full metre around obstacles;
-            # the footprint padding below remains the hard collision margin.
-            "        inflation_radius: 0.55": (
-                "        inflation_radius: 1.00"
-            ),
-            "max_vel_x: 0.26": "max_vel_x: 0.30",
-            "bt_loop_duration: 10": "bt_loop_duration: 50",
-            "expected_planner_frequency: 20.0": "expected_planner_frequency: 5.0",
-            "max_vel_theta: 1.0": "max_vel_theta: 0.60",
-            "max_speed_xy: 0.26": "max_speed_xy: 0.30",
-            "acc_lim_x: 2.5": "acc_lim_x: 0.30",
-            "acc_lim_theta: 3.2": "acc_lim_theta: 0.60",
-            "decel_lim_x: -2.5": "decel_lim_x: -0.40",
-            "decel_lim_theta: -3.2": "decel_lim_theta: -0.70",
-            # The collision-aware two-length backup needs the full recovery
-            # trajectory to remain inside the rolling local costmap.
-            "      width: 3": "      width: 6",
-            "      height: 3": "      height: 6",
-            "      track_unknown_space: true": "      track_unknown_space: false",
-            "          raytrace_max_range: 3.0": "          raytrace_max_range: 12.0",
-            "          obstacle_max_range: 2.5": "          obstacle_max_range: 11.5",
             # Costmap clearing uses the finite-ray stream.  RViz continues to
             # display the genuine /scan stream, where no-returns remain inf.
             "          topic: /scan": "          topic: /scan_clear",
-            # Retain the last valid obstacle briefly across a dropped scan,
-            # but mark the observation source stale after three missed 10 Hz
-            # updates so Nav2 stops rather than driving on old perception.
-            '          data_type: "LaserScan"': (
-                '          data_type: "LaserScan"\n'
-                '          observation_persistence: 0.50\n'
-                '          expected_update_rate: 0.45'
-            ),
-            # This is the final stock Nav2 parameter, so it is a stable point
-            # at which to append the separate slam_toolbox node section.
-            "    velocity_timeout: 1.0": (
-                "    velocity_timeout: 1.0\n\n" + slam_parameters.rstrip()
-            ),
+            "    velocity_timeout: 1.0": [
+                "    velocity_timeout: 1.0",
+                ConditionalText(
+                    "use_slam",
+                    "\n\n" + slam_parameters.rstrip(),
+                ),
+            ],
             "__SLAM_MAP_UPDATE_INTERVAL__": LaunchConfiguration(
                 "slam_map_update_interval"
             ),
@@ -180,15 +221,6 @@ def generate_launch_description():
             "__NAV2_BODY_CLEARANCE__": LaunchConfiguration(
                 "nav2_body_clearance"
             ),
-            # Exploration goals are positional. Accept any final orientation so
-            # DWB does not spin in place trying to match a frontier tangent.
-            "      stateful: True": "      stateful: False",
-            "      xy_goal_tolerance: 0.25": "      xy_goal_tolerance: 0.35",
-            "      yaw_goal_tolerance: 0.25": "      yaw_goal_tolerance: 3.14",
-            "max_velocity: [0.26, 0.0, 1.0]": "max_velocity: [0.30, 0.0, 0.60]",
-            "min_velocity: [-0.26, 0.0, -1.0]": "min_velocity: [-0.20, 0.0, -0.60]",
-            "max_accel: [2.5, 0.0, 3.2]": "max_accel: [0.30, 0.0, 0.60]",
-            "max_decel: [-2.5, 0.0, -3.2]": "max_decel: [-0.40, 0.0, -0.70]",
         },
     )
     headless = LaunchConfiguration("headless")
@@ -199,6 +231,7 @@ def generate_launch_description():
     wall_evaluation = LaunchConfiguration("wall_evaluation")
     wall_cooldown = LaunchConfiguration("wall_cooldown")
     start_wall_follower = LaunchConfiguration("start_wall_follower")
+    use_slam = LaunchConfiguration("use_slam")
     spawn_robot = Node(
         package="gazebo_ros",
         executable="spawn_entity.py",
@@ -213,10 +246,24 @@ def generate_launch_description():
             PythonLaunchDescriptionSource(
                 os.path.join(nav2_share, "launch", "slam_launch.py")
             ),
+            condition=IfCondition(use_slam),
             launch_arguments={
                 "params_file": nav2_params,
                 "use_sim_time": "True",
                 "autostart": "False",
+            }.items(),
+        ),
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                os.path.join(nav2_share, "launch", "localization_launch.py")
+            ),
+            condition=UnlessCondition(use_slam),
+            launch_arguments={
+                "map": LaunchConfiguration("map"),
+                "params_file": nav2_params,
+                "use_sim_time": "True",
+                "autostart": "True",
+                "use_composition": "False",
             }.items(),
         ),
         IncludeLaunchDescription(
@@ -255,6 +302,8 @@ def generate_launch_description():
         DeclareLaunchArgument("nav2_body_clearance", default_value="0.20"),
         DeclareLaunchArgument("use_rviz", default_value="True"),
         DeclareLaunchArgument("world", default_value=default_world),
+        DeclareLaunchArgument("map", default_value=default_map),
+        DeclareLaunchArgument("use_slam", default_value="False"),
         DeclareLaunchArgument("wall_distance", default_value="1.00"),
         DeclareLaunchArgument("inside_corner_clearance", default_value="1.00"),
         DeclareLaunchArgument("wall_speed", default_value="0.28"),
@@ -347,7 +396,7 @@ def generate_launch_description():
         ),
         spawn_robot,
         # Gazebo must publish /clock and the robot must provide odom ->
-        # base_footprint before SLAM/Nav2 create their lifecycle nodes.
+        # base_footprint before localization/Nav2 create their lifecycle nodes.
         RegisterEventHandler(
             OnProcessExit(
                 target_action=spawn_robot,

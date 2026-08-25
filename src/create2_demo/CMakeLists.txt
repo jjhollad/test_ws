@@ -27,7 +27,7 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
 )
 
-install(DIRECTORY launch urdf worlds rviz
+install(DIRECTORY launch maps urdf worlds rviz
   DESTINATION share/${PROJECT_NAME}
 )
 

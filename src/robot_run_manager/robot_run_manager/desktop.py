@@ -13,9 +13,8 @@
 # limitations under the License.
 
 from pathlib import Path
+import os
 import shlex
-
-from robot_run_manager.main import find_workspace
 
 
 def wrapper_text(workspace):
@@ -25,6 +24,8 @@ def wrapper_text(workspace):
         '#!/usr/bin/env bash\n'
         'set -eo pipefail\n'
         f'cd {quoted_workspace}\n'
+        'export ROBOT_RUN_MANAGER_ACTIVE_NAV2_PARAMS='
+        f'{shlex.quote(str(workspace / "run_manager_active_nav2_params.yaml"))}\n'
         'source /opt/ros/humble/setup.bash\n'
         'colcon build --symlink-install --base-paths src\n'
         f'source {shlex.quote(str(workspace / "install/setup.bash"))}\n'
@@ -52,6 +53,21 @@ def launcher_text(workspace, executable=None):
     )
 
 
+def find_workspace():
+    """Find the source workspace without importing GUI/runtime dependencies."""
+    candidates = []
+    configured = os.environ.get('ROBOT_WORKSPACE')
+    if configured:
+        candidates.append(Path(configured).expanduser())
+    current = Path.cwd()
+    candidates.extend([current, *current.parents, Path.home() / 'test_ws'])
+    for candidate in candidates:
+        package = candidate / 'src' / 'robot_run_manager' / 'package.xml'
+        if package.is_file():
+            return candidate.resolve()
+    return Path.home() / 'test_ws'
+
+
 def main():
     workspace = find_workspace()
     executable = Path.home() / '.local/bin/robot-run-manager'
@@ -66,5 +82,11 @@ def main():
         encoding='utf-8',
     )
     launcher.chmod(0o755)
-    print(f'Installed desktop launcher: {launcher}')
+    compact_launcher = desktop / 'RobotRunManager.desktop'
+    compact_launcher.write_text(
+        launcher_text(workspace, executable=executable),
+        encoding='utf-8',
+    )
+    compact_launcher.chmod(0o755)
+    print(f'Installed desktop launchers: {launcher}, {compact_launcher}')
     return 0

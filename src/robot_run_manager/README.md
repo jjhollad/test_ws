@@ -120,7 +120,7 @@ robot** on the robot computer and **Development / simulation** on the workstatio
 ## Run contents
 
 ```text
-runs/YYYY-MM-DD-HHMMSS/
+~/test_ws/runs/YYYY-MM-DD-HHMMSS/
 ├── bag/
 ├── calibration/           # snapshot of navigation/robot configuration
 ├── checksums.sha256       # created by validation

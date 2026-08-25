@@ -89,8 +89,9 @@ ACTION_GROUPS = {
         'Stop Autonomous Exploration',
         'Exploration E-Stop',
         'Clear Exploration E-Stop',
-        'Start Wall Follower',
-        'Stop Wall Follower',
+        'Start Demo Bringup',
+        'Start Demo Loop',
+        'Stop Demo Bringup',
         'Start Simulation',
         'Stop Simulation',
         'Replay Selected Run',
@@ -109,7 +110,10 @@ ACTION_GROUPS = {
 
 ACTION_TOOLTIPS = {
     'Preflight Check': 'Check ROS, workspace, hardware, display, and disk readiness.',
-    'Start Robot': 'Start the guarded real-robot motor, relay, and state-publisher stack.',
+    'Start Robot': (
+        'Start the guarded rectangular-robot motor, relay, joystick, and '
+        'state-publisher stack.'
+    ),
     'Stop Robot': 'Publish zero velocity and stop the GUI-managed real-robot stack.',
     'Start Xbox Teleop': (
         'Launch Xbox joystick input and teleop_twist_joy control for the '
@@ -146,12 +150,16 @@ ACTION_TOOLTIPS = {
     'Clear Exploration E-Stop': (
         'Clear the autonomous stop; readiness checks run again before motion resumes.'
     ),
-    'Start Wall Follower': (
-        'Start wall-first behavior-tree exploration. Wall tracing remains primary; '
-        'stagnation, loops, or retracing trigger nearest-frontier relocation.'
+    'Start Demo Bringup': (
+        'Start the real-robot demo stack: robot driver, relay, LiDAR, map, Nav2, '
+        'RViz, Xbox teleop, and twist mux. The loop stays idle until started.'
     ),
-    'Stop Wall Follower': (
-        'Stop behavior-tree wall exploration and its frontier planner.'
+    'Start Demo Loop': (
+        'After setting the robot pose in RViz, send the FullSB center-loop CSV '
+        'route to Nav2.'
+    ),
+    'Stop Demo Bringup': (
+        'Stop the demo bringup stack, cancel motion, and publish zero velocity.'
     ),
     'Start Simulation': (
         'Start the corridor Gazebo world, rectangular robot, SLAM, Nav2, and RViz.'
@@ -210,8 +218,9 @@ IMPLEMENTED_ACTIONS = {
     'Stop Autonomous Exploration',
     'Exploration E-Stop',
     'Clear Exploration E-Stop',
-    'Start Wall Follower',
-    'Stop Wall Follower',
+    'Start Demo Bringup',
+    'Start Demo Loop',
+    'Stop Demo Bringup',
 }
 
 HIDDEN_SUPERVISOR_EXPLORATION_ACTIONS = {
@@ -225,6 +234,7 @@ HIDDEN_SUPERVISOR_EXPLORATION_ACTIONS = {
 
 RECORD_TOPICS = [
     '/cmd_vel',
+    '/rosout',
     '/odom',
     '/scan',
     '/scan_raw',
@@ -234,6 +244,22 @@ RECORD_TOPICS = [
     '/tf_static',
     '/joint_states',
     '/relay_status',
+    '/cmd_vel_navigation',
+    '/cmd_vel_behaviors',
+    '/navigate_to_pose/_action/status',
+    '/navigate_to_pose/_action/feedback',
+    '/navigate_to_pose/_action/result',
+    '/compute_path_to_pose/_action/result',
+    '/follow_path/_action/status',
+    '/follow_path/_action/feedback',
+    '/follow_path/_action/result',
+    '/spin/_action/result',
+    '/backup/_action/result',
+    '/wait/_action/result',
+    '/behavior_tree_log',
+    '/controller_server/FollowPath/evaluation',
+    '/controller_server/FollowPath/trajectory_cloud',
+    '/controller_server/FollowPath/cost_cloud',
     '/chassis_contacts',
     '/front_caster_contacts',
     '/left_rear_wheel_contacts',
@@ -709,6 +735,11 @@ def find_workspace():
     return Path.home() / 'test_ws'
 
 
+def default_runs_dir():
+    """Return the shared run dataset directory."""
+    return (Path.home() / 'test_ws' / 'runs').resolve()
+
+
 def find_autonomy_workspace(manager_workspace):
     """Find the workspace containing the dedicated exploration launch."""
     configured = os.environ.get('BIGSWEEP_WORKSPACE')
@@ -735,6 +766,11 @@ class RunManagerWindow(QMainWindow):
         self.ros_node = ros_node
         self.cmd_vel_publisher = ros_node.create_publisher(Twist, '/cmd_vel', 10)
         self.workspace = find_workspace()
+        os.environ.setdefault(
+            'ROBOT_RUN_MANAGER_ACTIVE_NAV2_PARAMS',
+            str(self.workspace / 'run_manager_active_nav2_params.yaml'),
+        )
+        self.runs_dir = default_runs_dir()
         self.autonomy_workspace = find_autonomy_workspace(self.workspace)
         self.processes = {}
         self.buttons = {}
@@ -777,8 +813,8 @@ class RunManagerWindow(QMainWindow):
         self.behavior_tree_items = {}
 
         self.setWindowTitle('Robot Run Manager')
-        self.resize(950, 760)
         self._build_ui()
+        self._fit_initial_window()
         self.ros_spin_timer = QTimer(self)
         self.ros_spin_timer.setInterval(20)
         self.ros_spin_timer.timeout.connect(self._spin_ros_once)
@@ -789,6 +825,25 @@ class RunManagerWindow(QMainWindow):
         self.behavior_tree_timer.start()
         self._tick_behavior_tree()
         self._update_controls()
+
+    def _fit_initial_window(self):
+        """Fit the first window size inside a 1080p desktop work area."""
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            self.resize(1600, 900)
+            self.setMinimumSize(900, 650)
+            return
+        geometry = screen.availableGeometry()
+        width = min(1600, max(900, geometry.width() - 80))
+        height = min(900, max(650, geometry.height() - 80))
+        width = min(width, geometry.width())
+        height = min(height, geometry.height())
+        self.resize(width, height)
+        self.setMinimumSize(min(900, width), min(650, height))
+        self.move(
+            geometry.x() + max(0, (geometry.width() - width) // 2),
+            geometry.y() + max(0, (geometry.height() - height) // 2),
+        )
 
     def _apply_settings_migrations(self):
         """Apply one-time safer defaults to existing desktop settings."""
@@ -809,7 +864,10 @@ class RunManagerWindow(QMainWindow):
         root = QWidget()
         root_layout = QVBoxLayout(root)
         tabs = QTabWidget()
-        tabs.addTab(root, 'Operations')
+        operations_scroll = QScrollArea()
+        operations_scroll.setWidgetResizable(True)
+        operations_scroll.setWidget(root)
+        tabs.addTab(operations_scroll, 'Operations')
 
         title = QLabel('Robot Run Manager')
         title.setAlignment(Qt.AlignCenter)
@@ -869,7 +927,7 @@ class RunManagerWindow(QMainWindow):
         run_layout.setColumnStretch(3, 1)
         root_layout.addLayout(run_layout)
 
-        self.run_label = QLabel(f'Run storage: {self.workspace / "runs"}')
+        self.run_label = QLabel(f'Run storage: {self.runs_dir}')
         self.run_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         root_layout.addWidget(self.run_label)
 
@@ -929,13 +987,6 @@ class RunManagerWindow(QMainWindow):
                     button.setVisible(False)
             root_layout.addWidget(group)
 
-        self.buttons['Start Wall Follower'].setText(
-            'Start Behavior-Tree Exploration'
-        )
-        self.buttons['Stop Wall Follower'].setText(
-            'Stop Behavior-Tree Exploration'
-        )
-
         self.output = QPlainTextEdit()
         self.output.setReadOnly(True)
         self.output.setMaximumBlockCount(2000)
@@ -990,11 +1041,14 @@ class RunManagerWindow(QMainWindow):
         self.buttons['Clear Exploration E-Stop'].clicked.connect(
             lambda: self.set_exploration_emergency_stop(False)
         )
-        self.buttons['Start Wall Follower'].clicked.connect(
-            self.start_wall_follower
+        self.buttons['Start Demo Bringup'].clicked.connect(
+            self.start_demo_bringup
         )
-        self.buttons['Stop Wall Follower'].clicked.connect(
-            self.stop_wall_follower
+        self.buttons['Start Demo Loop'].clicked.connect(
+            self.start_demo_loop
+        )
+        self.buttons['Stop Demo Bringup'].clicked.connect(
+            self.stop_demo_bringup
         )
         self.buttons['Start Simulation'].clicked.connect(self.start_simulation)
         self.buttons['Stop Simulation'].clicked.connect(self.stop_simulation)
@@ -1224,7 +1278,9 @@ class RunManagerWindow(QMainWindow):
             'emergency': self.stop_timer.isActive(),
             'system_ready': self.preflight_passed,
             'navigation_active': navigation_active,
-            'localization': navigation_active and '/slam_toolbox' in node_names,
+            'localization': navigation_active and bool(
+                {'/slam_toolbox', '/amcl', '/map_server'} & node_names
+            ),
             'return_home': False,
             'dead_end_exit': False,
             'recovery': self.coordination_state == 'RECOVERY',
@@ -1399,7 +1455,7 @@ class RunManagerWindow(QMainWindow):
 
     def _set_workflow_styles(
         self, real_robot, running, recording, mapping, simulation,
-        replaying, exploring, wall_following,
+        replaying, exploring, demo_bringup,
     ):
         """Highlight the next action and make active stop actions conspicuous."""
         green = (
@@ -1443,9 +1499,12 @@ class RunManagerWindow(QMainWindow):
             action = 'Start Autonomous Exploration'
             if self.buttons[action].isEnabled():
                 self.buttons[action].setStyleSheet(green)
-        elif simulation and not wall_following:
-            if self.buttons['Start Wall Follower'].isEnabled():
-                self.buttons['Start Wall Follower'].setStyleSheet(green)
+        elif real_robot and not demo_bringup:
+            if self.buttons['Start Demo Bringup'].isEnabled():
+                self.buttons['Start Demo Bringup'].setStyleSheet(green)
+        elif demo_bringup:
+            if self.buttons['Start Demo Loop'].isEnabled():
+                self.buttons['Start Demo Loop'].setStyleSheet(green)
 
         stop_states = {
             'Stop Robot': running,
@@ -1454,7 +1513,7 @@ class RunManagerWindow(QMainWindow):
             'Stop Mapping': mapping,
             'Stop Simulation': simulation or replaying,
             'Stop Autonomous Exploration': exploring,
-            'Stop Wall Follower': wall_following,
+            'Stop Demo Bringup': demo_bringup,
         }
         for action, active in stop_states.items():
             if active:
@@ -1499,7 +1558,8 @@ class RunManagerWindow(QMainWindow):
         simulation = self._is_running('simulation')
         replaying = self._is_running('replay')
         exploring = self._is_running('autonomous_exploration')
-        wall_following = self._is_running('wall_follower')
+        demo_bringup = self._is_running('demo_bringup')
+        demo_loop_start = self._is_running('demo_loop_start')
         xbox_teleop = self._is_running('xbox_teleop')
         gazebo_client = self._is_running('gazebo_client')
         validating = self._is_running('validation')
@@ -1574,16 +1634,19 @@ class RunManagerWindow(QMainWindow):
         self.buttons['Clear Exploration E-Stop'].setEnabled(
             exploring and self.exploration_emergency_stopped
         )
-        self.buttons['Start Wall Follower'].setEnabled(
+        self.buttons['Start Demo Bringup'].setEnabled(
             self.preflight_passed
-            and not real_robot
+            and real_robot
             and not running
             and not mapping
             and not exploring
-            and not wall_following
+            and not demo_bringup
             and not replaying
         )
-        self.buttons['Stop Wall Follower'].setEnabled(wall_following)
+        self.buttons['Start Demo Loop'].setEnabled(
+            demo_bringup and not demo_loop_start
+        )
+        self.buttons['Stop Demo Bringup'].setEnabled(demo_bringup)
         self.buttons['Start Simulation'].setEnabled(
             not real_robot
             and self.preflight_passed
@@ -1614,9 +1677,11 @@ class RunManagerWindow(QMainWindow):
         )
         self.buttons['Download Code'].setEnabled(not any([
             running, recording, mapping, simulation, replaying, exploring,
+            demo_bringup,
         ]))
         self.buttons['Upload Code'].setEnabled(not any([
             running, recording, mapping, simulation, replaying, exploring,
+            demo_bringup,
         ]))
         self.buttons['View Logs'].setEnabled(True)
         self.buttons['Flag & Open Logs'].setEnabled(True)
@@ -1636,8 +1701,10 @@ class RunManagerWindow(QMainWindow):
             active.append('replay')
         if exploring:
             active.append(f'autonomous exploration ({self.exploration_state})')
-        if wall_following:
-            active.append('wall follower')
+        if demo_bringup:
+            active.append('demo bringup')
+        if demo_loop_start:
+            active.append('demo loop request')
         if xbox_teleop:
             active.append('Xbox teleop')
         if gazebo_client:
@@ -1648,7 +1715,7 @@ class RunManagerWindow(QMainWindow):
             active.append('transfer')
         self.role_selector.setEnabled(not any([
             running, recording, mapping, simulation, replaying, exploring,
-            wall_following, xbox_teleop,
+            demo_bringup, xbox_teleop,
         ]))
         self.process_label.setText(
             f'Managed processes: {", ".join(active)} running' if active
@@ -1656,7 +1723,7 @@ class RunManagerWindow(QMainWindow):
         )
         self._set_workflow_styles(
             real_robot, running, recording, mapping, simulation, replaying,
-            exploring, wall_following,
+            exploring, demo_bringup,
         )
 
     def _is_running(self, name):
@@ -1700,7 +1767,7 @@ class RunManagerWindow(QMainWindow):
                 and (
                     self.autonomy_workspace / 'install' / 'setup.bash'
                 ).is_file(),
-                True,
+                False,
             ),
             ('Graphical display', bool(os.environ.get('DISPLAY')), False),
             ('Git command', shutil.which('git') is not None, False),
@@ -1831,7 +1898,7 @@ class RunManagerWindow(QMainWindow):
             [
                 'launch',
                 'generic_motor_driver',
-                'complete_robot.launch.py',
+                'rectangular_robot.launch.py',
                 'rviz:=false',
             ],
         )
@@ -2173,6 +2240,91 @@ class RunManagerWindow(QMainWindow):
         self._begin_zero_velocity_burst()
         self.statusBar().showMessage('Stopping wandering mapper')
 
+    def start_demo_bringup(self):
+        if (
+            not self.preflight_passed
+            or not self._is_real_robot_role()
+            or self._is_running('robot')
+            or self._is_running('mapping')
+            or self._is_running('autonomous_exploration')
+            or self._is_running('demo_bringup')
+            or self._is_running('replay')
+        ):
+            return
+        if self.autonomy_workspace is None:
+            QMessageBox.critical(
+                self,
+                'Demo workspace unavailable',
+                'The manager could not find the BigSweep workspace. Set '
+                'BIGSWEEP_WORKSPACE or place it at ~/BigSweepLogic.',
+            )
+            return
+        setup_file = self.autonomy_workspace / 'install' / 'setup.bash'
+        if not setup_file.is_file():
+            QMessageBox.critical(
+                self,
+                'Demo workspace is not built',
+                f'Build {self.autonomy_workspace} before starting the demo.',
+            )
+            return
+        if not Path('/dev/lidar').exists():
+            QMessageBox.critical(
+                self,
+                'LiDAR unavailable',
+                'The demo navigation stack requires /dev/lidar.',
+            )
+            return
+        answer = QMessageBox.warning(
+            self,
+            'Start demo navigation bringup?',
+            'This starts the real robot driver, relay, LiDAR, map server, Nav2, '
+            'RViz, Xbox controller input, and twist mux. The robot should not '
+            'start the loop until you initialize its pose and press Start Demo '
+            'Loop. Keep the physical emergency stop within reach.',
+            QMessageBox.Ok | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if answer != QMessageBox.Ok:
+            return
+        command = (
+            f'source {shlex.quote(str(setup_file))} && '
+            'exec ros2 launch generic_motor_driver cleaning_bringup.launch.py '
+            'start_cleaning:=false publish_initial_pose:=false rviz:=true'
+        )
+        self._start_process('demo_bringup', 'bash', ['-lc', command])
+
+    def start_demo_loop(self):
+        if (
+            not self._is_running('demo_bringup')
+            or self._is_running('demo_loop_start')
+        ):
+            return
+        answer = QMessageBox.warning(
+            self,
+            'Start FullSB demo loop?',
+            'Confirm the robot pose has been initialized in RViz and Nav2 is '
+            'localized. This sends the FullSB center-loop CSV route to Nav2.',
+            QMessageBox.Ok | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if answer != QMessageBox.Ok:
+            return
+        setup_file = self.autonomy_workspace / 'install' / 'setup.bash'
+        command = (
+            f'source {shlex.quote(str(setup_file))} && '
+            'exec ros2 service call /start_coverage_cleaning '
+            'std_srvs/srv/Trigger {}'
+        )
+        self._start_process('demo_loop_start', 'bash', ['-lc', command])
+
+    def stop_demo_bringup(self):
+        if not self._is_running('demo_bringup'):
+            return
+        self._begin_zero_velocity_burst()
+        self._request_stop('demo_loop_start')
+        self._request_stop('demo_bringup')
+        self.statusBar().showMessage('Stopping demo navigation bringup')
+
     def start_wall_follower(self):
         if (
             not self.preflight_passed
@@ -2286,6 +2438,7 @@ class RunManagerWindow(QMainWindow):
                 'headless:=True',
                 'use_rviz:=True',
                 'start_wall_follower:=false',
+                'use_slam:=False',
                 'nav2_body_clearance:='
                 f'{self._configuration_value("robot_clearance")}',
                 *self._slam_launch_arguments(),
@@ -2329,7 +2482,7 @@ class RunManagerWindow(QMainWindow):
         selected = QFileDialog.getExistingDirectory(
             self,
             'Select a run folder or rosbag folder',
-            str(self.workspace / 'runs'),
+            str(self.runs_dir),
         )
         if not selected:
             return
@@ -2363,7 +2516,7 @@ class RunManagerWindow(QMainWindow):
         selected = QFileDialog.getExistingDirectory(
             self,
             title,
-            str(self.workspace / 'runs'),
+            str(self.runs_dir),
         )
         if not selected:
             return None
@@ -2423,7 +2576,7 @@ class RunManagerWindow(QMainWindow):
                     'Enter the exact remote run-folder name.',
                 )
                 return
-            local_run = self.workspace / 'runs' / run_name
+            local_run = self.runs_dir / run_name
             if local_run.exists():
                 answer = QMessageBox.warning(
                     self,
@@ -2618,7 +2771,7 @@ class RunManagerWindow(QMainWindow):
     def _default_log_run(self):
         if self.active_run is not None:
             return self.active_run
-        runs_dir = self.workspace / 'runs'
+        runs_dir = self.runs_dir
         candidates = [
             path.parent for path in runs_dir.glob('*/metadata.json')
         ] if runs_dir.is_dir() else []
@@ -2830,12 +2983,18 @@ class RunManagerWindow(QMainWindow):
             return
         if result == 0:
             launcher = Path.home() / 'Desktop/Robot Run Manager.desktop'
-            self.output.appendPlainText(f'Desktop launcher installed: {launcher}')
+            compact_launcher = Path.home() / 'Desktop/RobotRunManager.desktop'
+            self.output.appendPlainText(
+                'Desktop launchers installed: '
+                f'{launcher}, {compact_launcher}'
+            )
             QMessageBox.information(
                 self,
-                'Desktop launcher installed',
-                f'Launcher created at:\n{launcher}\n\nIf Ubuntu asks, '
-                'right-click it and select Allow Launching.',
+                'Desktop launchers installed',
+                'Launchers created at:\n'
+                f'{launcher}\n{compact_launcher}\n\n'
+                'If Ubuntu asks, right-click either one and select '
+                'Allow Launching.',
             )
 
     def _git_revision(self):
@@ -2870,15 +3029,27 @@ class RunManagerWindow(QMainWindow):
         calibration_dir = run_dir / 'calibration'
         calibration_dir.mkdir()
         sources = {
+            'active_nav2_params.yaml': os.environ.get(
+                'ROBOT_RUN_MANAGER_ACTIVE_NAV2_PARAMS'
+            ),
             'nav2_params.yaml': (
                 'src/create_robot/create_driver/config/nav2_params.yaml'
+            ),
+            'nav2_params_sim.yaml': (
+                'src/create_robot/create_driver/config/nav2_params_sim.yaml'
             ),
             'mapper_params_online_async.yaml': (
                 'src/create_robot/create_driver/config/'
                 'mapper_params_online_async.yaml'
             ),
-            'complete_robot.launch.py': (
-                'src/create_robot/create_driver/launch/complete_robot.launch.py'
+            'rectangular_robot_demo.launch.py': (
+                'src/create2_demo/launch/rectangular_robot_demo.launch.py'
+            ),
+            'simulation_map.yaml': (
+                'src/create2_demo/maps/Sim_Map.yaml'
+            ),
+            'simulation_map.pgm': (
+                'src/create2_demo/maps/Sim_Map.pgm'
             ),
             'robot.urdf.xacro': (
                 'src/create_robot/create_description/urdf/'
@@ -2887,7 +3058,11 @@ class RunManagerWindow(QMainWindow):
         }
         captured = []
         for destination_name, relative_source in sources.items():
-            source = self.workspace / relative_source
+            if not relative_source:
+                continue
+            source = Path(relative_source)
+            if not source.is_absolute():
+                source = self.workspace / relative_source
             if source.is_file():
                 shutil.copy2(source, calibration_dir / destination_name)
                 captured.append(destination_name)
@@ -2896,7 +3071,7 @@ class RunManagerWindow(QMainWindow):
     def start_recording(self):
         if not self.preflight_passed or self._is_running('recording'):
             return
-        runs_dir = self.workspace / 'runs'
+        runs_dir = self.runs_dir
         runs_dir.mkdir(parents=True, exist_ok=True)
         run_id = datetime.now().astimezone().strftime('%Y-%m-%d-%H%M%S')
         run_dir = runs_dir / run_id
@@ -2941,7 +3116,12 @@ class RunManagerWindow(QMainWindow):
         self._start_process(
             'recording',
             'ros2',
-            ['bag', 'record', '-o', str(run_dir / 'bag'), *RECORD_TOPICS],
+            [
+                'bag', 'record',
+                '-o', str(run_dir / 'bag'),
+                '--include-hidden-topics',
+                *RECORD_TOPICS,
+            ],
         )
 
     def stop_recording(self):

@@ -19,6 +19,8 @@ from robot_run_manager.main import (
     ACTION_TOOLTIPS,
     IMPLEMENTED_ACTIONS,
     TUNING_VARIABLES,
+    RECORD_TOPICS,
+    default_runs_dir,
     find_autonomy_workspace,
 )
 
@@ -34,7 +36,14 @@ def test_every_implemented_action_has_a_button():
     assert all(ACTION_TOOLTIPS.values())
     assert 'Start Wandering Mapper' not in buttons
     assert 'Stop Wandering Mapper' not in buttons
+    assert 'Start Wall Follower' not in buttons
+    assert 'Stop Wall Follower' not in buttons
     assert {'Start Xbox Teleop', 'Stop Xbox Teleop'} <= buttons
+    assert {
+        'Start Demo Bringup',
+        'Start Demo Loop',
+        'Stop Demo Bringup',
+    } <= buttons
     assert {
         'Start Autonomous Exploration',
         'Pause Exploration',
@@ -56,6 +65,11 @@ def test_autonomy_workspace_discovery(tmp_path, monkeypatch):
     assert find_autonomy_workspace(Path('/missing')) == tmp_path
 
 
+def test_default_runs_dir_uses_test_ws_home(tmp_path, monkeypatch):
+    monkeypatch.setenv('HOME', str(tmp_path))
+    assert default_runs_dir() == tmp_path / 'test_ws' / 'runs'
+
+
 def test_tuning_variables_have_safe_ranges_and_descriptions():
     assert TUNING_VARIABLES
     for specification in TUNING_VARIABLES.values():
@@ -63,3 +77,23 @@ def test_tuning_variables_have_safe_ranges_and_descriptions():
         assert name and group and description
         assert minimum <= default <= maximum
         assert decimals in (0, 1, 2)
+
+
+def test_recording_topics_include_nav2_failure_diagnostics():
+    expected = {
+        '/navigate_to_pose/_action/status',
+        '/navigate_to_pose/_action/feedback',
+        '/navigate_to_pose/_action/result',
+        '/compute_path_to_pose/_action/result',
+        '/follow_path/_action/status',
+        '/follow_path/_action/feedback',
+        '/follow_path/_action/result',
+        '/spin/_action/result',
+        '/backup/_action/result',
+        '/wait/_action/result',
+        '/behavior_tree_log',
+        '/rosout',
+        '/cmd_vel_navigation',
+        '/cmd_vel_behaviors',
+    }
+    assert expected <= set(RECORD_TOPICS)
